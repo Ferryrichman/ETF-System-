@@ -14,6 +14,7 @@ import numpy as np
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import plotly.graph_objects as go
+import time
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -128,19 +129,70 @@ div[data-testid="stTextArea"] label { display: none; }
 # ══════════════════════════════════════════════════════════
 #  DATA LAYER
 # ══════════════════════════════════════════════════════════
+def _get_close_series(t: str, start, end) -> pd.Series:
+    """
+    Robustly fetch monthly-resampled Adj Close for one ticker.
+    Handles yfinance API changes (single-ticker vs multi-level columns)
+    and retries on transient Yahoo Finance errors.
+    """
+    start_str = start.strftime("%Y-%m-%d")
+    end_str   = end.strftime("%Y-%m-%d")
+
+    for attempt in range(4):
+        try:
+            # ── Method 1: Ticker.history (most reliable on cloud) ──
+            tk  = yf.Ticker(t)
+            raw = tk.history(start=start_str, end=end_str, auto_adjust=True)
+            if not raw.empty and "Close" in raw.columns:
+                return raw["Close"].resample("ME").last()
+        except Exception:
+            pass
+
+        try:
+            # ── Method 2: yf.download single ticker ──
+            raw = yf.download(t, start=start_str, end=end_str,
+                              progress=False, auto_adjust=True)
+            if not raw.empty:
+                # New yfinance returns MultiIndex (metric, ticker)
+                if isinstance(raw.columns, pd.MultiIndex):
+                    col = raw["Close"]
+                    series = col[t] if t in col.columns else col.iloc[:, 0]
+                elif "Close" in raw.columns:
+                    series = raw["Close"]
+                elif "Adj Close" in raw.columns:
+                    series = raw["Adj Close"]
+                else:
+                    series = raw.iloc[:, 0]
+                if isinstance(series, pd.DataFrame):
+                    series = series.squeeze()
+                return series.resample("ME").last()
+        except Exception:
+            pass
+
+        time.sleep(2 ** attempt)   # exponential back-off: 1s, 2s, 4s, 8s
+
+    return pd.Series(dtype=float)  # empty — caller handles
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_prices() -> pd.DataFrame:
     """Download monthly end-of-month Adj-Close for SPY / VEU / BIL."""
-    end = datetime.today()
+    end   = datetime.today()
     start = end - relativedelta(years=22)
     frames = {}
     for t in TICKERS:
-        raw = yf.download(t, start=start, end=end, progress=False, auto_adjust=True)
-        if raw.empty:
-            st.error(f"無法下載 {t} 數據，請檢查網絡連接。")
+        s = _get_close_series(t, start, end)
+        if s.empty:
+            st.error(
+                f"⚠️ 無法從 Yahoo Finance 下載 **{t}** 數據。\n\n"
+                "可能原因：Yahoo Finance 暫時限制，請等候 1-2 分鐘後重新整理頁面（F5）。"
+            )
             st.stop()
-        frames[t] = raw["Close"].resample("ME").last()
+        frames[t] = s
     df = pd.DataFrame(frames).dropna()
+    if df.empty:
+        st.error("數據合併失敗，請重新整理頁面。")
+        st.stop()
     return df
 
 
