@@ -129,92 +129,95 @@ div[data-testid="stTextArea"] label { display: none; }
 # ══════════════════════════════════════════════════════════
 #  DATA LAYER
 # ══════════════════════════════════════════════════════════
-def _get_daily_close(t: str, start, end) -> pd.Series:
+def _get_daily_ohlc(t: str, start, end) -> pd.DataFrame:
     """
-    Robustly fetch DAILY close prices for one ticker.
+    Robustly fetch DAILY Open + Close prices for one ticker.
+    Returns DataFrame with columns ['Open', 'Close'].
     Tries Ticker.history first, falls back to yf.download.
     Retries with exponential back-off on transient Yahoo Finance errors.
     """
     start_str = start.strftime("%Y-%m-%d")
     end_str   = end.strftime("%Y-%m-%d")
 
+    def _extract(raw: pd.DataFrame) -> pd.DataFrame:
+        """Pull Open and Close from a raw yfinance DataFrame."""
+        if isinstance(raw.columns, pd.MultiIndex):
+            # yf.download multi-ticker format
+            result = pd.DataFrame(index=raw.index)
+            for col in ("Open", "Close"):
+                lvl = raw[col]
+                result[col] = (lvl[t] if t in lvl.columns else lvl.iloc[:, 0])
+        else:
+            result = pd.DataFrame(index=raw.index)
+            result["Open"]  = raw.get("Open",  raw.get("open",  pd.Series(dtype=float)))
+            result["Close"] = raw.get("Close", raw.get("Adj Close", pd.Series(dtype=float)))
+        # Squeeze any accidental DataFrame columns
+        for c in ("Open", "Close"):
+            if isinstance(result[c], pd.DataFrame):
+                result[c] = result[c].squeeze()
+        return result.sort_index()
+
     for attempt in range(4):
         try:
-            # ── Method 1: Ticker.history ──
             tk  = yf.Ticker(t)
             raw = tk.history(start=start_str, end=end_str, auto_adjust=True)
             if not raw.empty and "Close" in raw.columns:
-                s = raw["Close"]
-                if isinstance(s, pd.DataFrame):
-                    s = s.squeeze()
-                return s.sort_index()
+                return _extract(raw)
         except Exception:
             pass
 
         try:
-            # ── Method 2: yf.download ──
             raw = yf.download(t, start=start_str, end=end_str,
                               progress=False, auto_adjust=True)
             if not raw.empty:
-                if isinstance(raw.columns, pd.MultiIndex):
-                    col = raw["Close"]
-                    s = col[t] if t in col.columns else col.iloc[:, 0]
-                elif "Close" in raw.columns:
-                    s = raw["Close"]
-                elif "Adj Close" in raw.columns:
-                    s = raw["Adj Close"]
-                else:
-                    s = raw.iloc[:, 0]
-                if isinstance(s, pd.DataFrame):
-                    s = s.squeeze()
-                return s.sort_index()
+                return _extract(raw)
         except Exception:
             pass
 
         time.sleep(2 ** attempt)
 
-    return pd.Series(dtype=float)
+    return pd.DataFrame(columns=["Open", "Close"])
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_prices() -> pd.DataFrame:
     """
-    Download daily prices and compute two monthly series per ETF:
-      {t}        – last trading day close  → for momentum signal calculation
-      {t}_first  – first trading day close → buy-in price for return calculation
+    Download daily OHLC and compute two monthly series per ETF:
+      {t}       – last trading day CLOSE  → momentum signal lookback
+      {t}_open  – first trading day OPEN  → actual buy / sell price
 
-    Correct return formula (matching user's actual trading):
-      Monthly return = last trading day close ÷ first trading day close − 1
+    Correct return formula (user's actual trading):
+      Monthly return = first_open(M+1) ÷ first_open(M) − 1
     """
     end   = datetime.today()
     start = end - relativedelta(years=22)
 
-    end_frames   = {}   # month-end close   (signal)
-    first_frames = {}   # month-start close (buy-in)
+    close_frames = {}   # month-end close  (signal)
+    open_frames  = {}   # month-start open (trade price)
 
     for t in TICKERS:
-        daily = _get_daily_close(t, start, end)
-        if daily.empty:
+        daily = _get_daily_ohlc(t, start, end)
+        if daily.empty or daily["Close"].dropna().empty:
             st.error(
                 f"⚠️ 無法從 Yahoo Finance 下載 **{t}** 數據。\n\n"
                 "Yahoo Finance 暫時限制，請等候 1-2 分鐘後重新整理頁面（F5）。"
             )
             st.stop()
 
-        # Last trading day close of each month (for momentum lookback)
-        end_frames[t]   = daily.resample("ME").last()
-        # First trading day close of each month (buy-in price)
-        first_frames[t] = daily.resample("ME").first()
+        # Last trading day CLOSE of each month → momentum signal
+        close_frames[t] = daily["Close"].resample("ME").last()
+        # First trading day OPEN of each month → buy/sell execution price
+        open_frames[t]  = daily["Open"].resample("ME").first()
 
     # Main DataFrame indexed by month-end dates
-    df = pd.DataFrame(end_frames).dropna()
+    df = pd.DataFrame(close_frames).dropna()
     if df.empty:
         st.error("數據合併失敗，請重新整理頁面。")
         st.stop()
 
-    # Attach first-trading-day prices (same month-end index)
+    # Attach first-trading-day open prices (same month-end index)
     for t in TICKERS:
-        df[f"{t}_first"] = first_frames[t].reindex(df.index)
+        df[f"{t}_open"] = open_frames[t].reindex(df.index)
 
     return df
 
@@ -251,19 +254,22 @@ def compute_signals(df: pd.DataFrame) -> pd.DataFrame:
     )
 
     # Monthly strategy return (correct formula):
-    # Signal determined at end of month M → hold ETF during month M+1
-    # Buy:  first trading day close of month M   → prices[f"{t}_first"] at row M
-    # Sell: first trading day close of month M+1 → prices[f"{t}_first"] at row M+1
-    # Return = first_close(M+1) / first_close(M) - 1
-    #        = prices[f"{t}_first"].shift(-1) / prices[f"{t}_first"] - 1
+    # Signal determined at end of month M → trade on first day of month M+1
     #
-    # Note: prev_sig at row M+1 = signal from row M (end of month M)
-    #       so we match the signal at row M with the return period M → M+1
+    # Buy:  first trading day OPEN of month M   → prices[f"{t}_open"] at row M
+    # Sell: first trading day OPEN of month M+1 → prices[f"{t}_open"] at row M+1
+    # Return = open(M+1) / open(M) - 1
+    #
+    # In the DataFrame (indexed by month-end):
+    #   prices[f"{t}_open"]          at row M   = buy  price
+    #   prices[f"{t}_open"].shift(-1) at row M  = sell price (next month's open)
+    #
+    # prev_sig at row M = signal(M-1) → tells us which ETF we bought on day 1 of M
     prev_sig = prices["signal"].shift(1)
     prices["signal_return"] = np.nan
     for t in TICKERS:
         mask = prev_sig == t
-        holding_ret = prices[f"{t}_first"].shift(-1) / prices[f"{t}_first"] - 1
+        holding_ret = prices[f"{t}_open"].shift(-1) / prices[f"{t}_open"] - 1
         prices.loc[mask, "signal_return"] = holding_ret[mask]
 
     return prices
