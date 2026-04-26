@@ -70,8 +70,8 @@ def inject_css():
 * { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
 
 /* ── Text ── */
-[data-testid="stMarkdownContainer"] p { color: #94a3b8 !important; font-size: 13px; }
-h1,h2,h3 { color: #e2e8f0 !important; }
+[data-testid="stMarkdownContainer"] p { color: #94a3b8 !important; font-size: 15px; }
+h1,h2,h3 { color: #e2e8f0 !important; font-size: 22px !important; }
 
 /* ── Hide Streamlit chrome ── */
 #MainMenu { visibility: hidden; }
@@ -89,8 +89,8 @@ footer    { visibility: hidden; }
     color: #64748b !important;
     font-weight: 600;
     border-radius: 9px;
-    font-size: 12px;
-    padding: 6px 18px;
+    font-size: 14px;
+    padding: 8px 22px;
 }
 .stTabs [aria-selected="true"] {
     background: #334155 !important;
@@ -252,14 +252,18 @@ def compute_signals(df: pd.DataFrame) -> pd.DataFrame:
 
     # Monthly strategy return (correct formula):
     # Signal determined at end of month M → hold ETF during month M+1
-    # Buy:  first trading day close of month M+1  → prices[f"{t}_first"] at row M+1
-    # Sell: last  trading day close of month M+1  → prices[t]            at row M+1
-    # Return = last_close / first_close - 1
+    # Buy:  first trading day close of month M   → prices[f"{t}_first"] at row M
+    # Sell: first trading day close of month M+1 → prices[f"{t}_first"] at row M+1
+    # Return = first_close(M+1) / first_close(M) - 1
+    #        = prices[f"{t}_first"].shift(-1) / prices[f"{t}_first"] - 1
+    #
+    # Note: prev_sig at row M+1 = signal from row M (end of month M)
+    #       so we match the signal at row M with the return period M → M+1
     prev_sig = prices["signal"].shift(1)
     prices["signal_return"] = np.nan
     for t in TICKERS:
         mask = prev_sig == t
-        holding_ret = prices[t] / prices[f"{t}_first"] - 1
+        holding_ret = prices[f"{t}_first"].shift(-1) / prices[f"{t}_first"] - 1
         prices.loc[mask, "signal_return"] = holding_ret[mask]
 
     return prices
@@ -319,18 +323,20 @@ def calc_stats(prices: pd.DataFrame) -> dict:
     changes = int((prices["signal"] != prices["signal"].shift(1)).sum())
 
     return {
-        "cagr":       cagr,
-        "mdd":        mdd,
-        "mdd_start":  mdd_start,
-        "mdd_end":    mdd_end,
-        "total_ret":  total,
-        "n_years":    n_yrs,
-        "init_10k":   float(cum.iloc[-1] * 10000),
-        "trades_yr":  changes / n_yrs,
-        "monthly":    monthly,
-        "cumulative": cum * 10000,
-        "cagr_3yr":   trailing_cagr(3),
-        "cagr_5yr":   trailing_cagr(5),
+        "cagr":            cagr,
+        "mdd":             mdd,
+        "mdd_start":       mdd_start,
+        "mdd_end":         mdd_end,
+        "backtest_start":  monthly.index[0],
+        "backtest_end":    monthly.index[-1],
+        "total_ret":       total,
+        "n_years":         n_yrs,
+        "init_10k":        float(cum.iloc[-1] * 10000),
+        "trades_yr":       changes / n_yrs,
+        "monthly":         monthly,
+        "cumulative":      cum * 10000,
+        "cagr_3yr":        trailing_cagr(3),
+        "cagr_5yr":        trailing_cagr(5),
     }
 
 
@@ -360,22 +366,22 @@ def render_header():
         background: linear-gradient(135deg,#6366f1,#8b5cf6);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
-        font-size: 11px;
+        font-size: 14px;
         font-weight: 800;
         letter-spacing: 3px;
         text-transform: uppercase;
-        margin-bottom: 10px;
+        margin-bottom: 12px;
     ">FerryRichMan Limited</div>
     <div style="
-        font-size: 30px;
+        font-size: 42px;
         font-weight: 900;
         color: #f1f5f9;
-        letter-spacing: -1.5px;
-        line-height: 1.15;
-        margin-bottom: 6px;
+        letter-spacing: -2px;
+        line-height: 1.12;
+        margin-bottom: 10px;
     ">QRS Standard<br><span style="color:#6366f1;">Signal System</span></div>
     <div style="
-        font-size: 12px;
+        font-size: 15px;
         color: #475569;
         letter-spacing: 0.5px;
     ">月度動力 ETF 訊號 &nbsp;·&nbsp; Momentum ETF Monthly Signal</div>
@@ -563,12 +569,16 @@ def render_whatsapp_section(info: dict, stats: dict):
         else f"✅ 維持上月持倉：{sig} 不變，無需換倉"
     )
 
-    # MDD period
+    # ── Build backtest period string ──
+    bt_start = stats["backtest_start"].year if stats.get("backtest_start") is not None else "—"
+    bt_end   = stats["backtest_end"].year   if stats.get("backtest_end")   is not None else "—"
+    bt_period = f"（{bt_start}-{bt_end}）"
+
+    # ── Build CAGR / MDD line ──
     mdd_start_str = stats["mdd_start"].strftime("%Y-%m") if stats.get("mdd_start") is not None else "—"
     mdd_end_str   = stats["mdd_end"].strftime("%Y-%m")   if stats.get("mdd_end")   is not None else "—"
-    mdd_period    = f"（{mdd_start_str} ~ {mdd_end_str}）"
+    mdd_period    = f"（{mdd_start_str}~{mdd_end_str}）"
 
-    # Trailing returns
     c3 = stats.get("cagr_3yr")
     c5 = stats.get("cagr_5yr")
     yr3_line = f"3年年化回報：{c3*100:.1f}%" if c3 is not None else "3年年化回報：數據不足"
@@ -584,7 +594,7 @@ def render_whatsapp_section(info: dict, stats: dict):
         f"📅 執行時間：本月第一個交易日\n"
         f"⏰ 美股開市後任何時間均可執行\n"
         f"\n"
-        f"回測CAGR：{stats['cagr']*100:.1f}%  |  MDD：{stats['mdd']*100:.1f}% {mdd_period}\n"
+        f"回測CAGR：{stats['cagr']*100:.1f}% {bt_period}  |  MDD：{stats['mdd']*100:.1f}% {mdd_period}\n"
         f"{yr3_line}\n"
         f"{yr5_line}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -592,21 +602,15 @@ def render_whatsapp_section(info: dict, stats: dict):
         f"（不構成任何投資建議）"
     )
 
-    # JS-safe escaping
-    js_msg = (
-        msg
-        .replace("\\", "\\\\")
-        .replace("`", "\\`")
-        .replace("$", "\\$")
-        .replace("\n", "\\n")
-    )
-    html_msg = (
+    # HTML-encode for display div and hidden textarea
+    # Using hidden textarea avoids ALL JS string-escaping issues
+    html_enc = (
         msg
         .replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
-        .replace("\n", "<br>")
     )
+    html_display = html_enc.replace("\n", "<br>")
 
     components.html(
         f"""
@@ -617,83 +621,78 @@ def render_whatsapp_section(info: dict, stats: dict):
 <style>
   * {{ box-sizing:border-box; margin:0; padding:0; }}
   body {{
-    margin:0; padding:0;
+    margin:0; padding:10px 0 4px;
     font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
     background:transparent;
   }}
   .lbl {{
-    font-size:10px; color:#64748b; font-weight:800;
+    font-size:11px; color:#64748b; font-weight:800;
     text-transform:uppercase; letter-spacing:1.5px; margin-bottom:10px;
   }}
   .msg {{
     background:#060c1a;
-    border:1.5px dashed #1e293b;
+    border:1.5px dashed #334155;
     border-radius:12px;
     padding:16px 18px;
-    font-size:12px;
+    font-size:13px;
     color:#94a3b8;
     line-height:1.85;
     font-family:'Courier New',monospace;
     margin-bottom:14px;
-    white-space:pre-wrap;
     word-break:break-word;
   }}
   .btn {{
-    display:inline-block;
+    display:block; width:100%;
     background: linear-gradient(135deg, #6366f1, #8b5cf6);
-    color: #fff;
-    border: none;
-    border-radius: 10px;
-    padding: 12px 32px;
-    font-size: 14px;
-    font-weight: 700;
-    cursor: pointer;
-    letter-spacing: 0.3px;
-    transition: all 0.2s;
-    box-shadow: 0 4px 15px rgba(99,102,241,0.35);
-    width:100%;
-    text-align:center;
+    color: #fff; border: none; border-radius: 12px;
+    padding: 15px 0; font-size: 15px; font-weight: 700;
+    cursor: pointer; letter-spacing: 0.3px;
+    box-shadow: 0 4px 18px rgba(99,102,241,0.4);
+    transition: opacity 0.15s, transform 0.15s;
   }}
-  .btn:hover {{ opacity:0.9; transform: translateY(-1px); }}
+  .btn:hover {{ opacity:0.88; transform:translateY(-1px); }}
+  .btn:active {{ transform:translateY(0); }}
   .btn.ok {{
     background: linear-gradient(135deg,#059669,#047857);
-    box-shadow: 0 4px 15px rgba(5,150,105,0.35);
+    box-shadow: 0 4px 18px rgba(5,150,105,0.4);
   }}
 </style>
 </head>
 <body>
+<!-- hidden textarea: text lives in DOM, zero JS-escaping issues -->
+<textarea id="rawmsg" readonly
+  style="position:absolute;left:-9999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none;"
+>{html_enc}</textarea>
+
 <div class="lbl">📱 WhatsApp 訊息</div>
-<div class="msg">{html_msg}</div>
+<div class="msg">{html_display}</div>
 <button class="btn" id="b" onclick="cp()">📋 一鍵複製</button>
+
 <script>
 function cp() {{
-  var t = `{js_msg}`;
-  var b = document.getElementById('b');
+  var ta  = document.getElementById('rawmsg');
+  var b   = document.getElementById('b');
+  var txt = ta.value;
   function done() {{
     b.className = 'btn ok';
     b.innerHTML = '✅ 已複製！可直接貼到 WhatsApp';
     setTimeout(function(){{ b.className='btn'; b.innerHTML='📋 一鍵複製'; }}, 3000);
   }}
-  if (navigator.clipboard && navigator.clipboard.writeText) {{
-    navigator.clipboard.writeText(t).then(done, fall);
-  }} else {{ fall(); }}
   function fall() {{
-    var x = document.createElement('textarea');
-    x.value = t;
-    x.setAttribute('readonly', '');
-    x.style.cssText = 'position:fixed;top:0;left:0;opacity:0;';
-    document.body.appendChild(x);
-    x.select();
-    x.setSelectionRange(0, 99999);
-    try {{ document.execCommand('copy'); done(); }} catch(e) {{ alert('請手動複製上方訊息'); }}
-    document.body.removeChild(x);
+    ta.style.cssText = 'position:static;width:100%;height:60px;opacity:1;pointer-events:auto;margin-bottom:8px;';
+    ta.select(); ta.setSelectionRange(0, 99999);
+    try {{ document.execCommand('copy'); done(); }} catch(e) {{}}
+    ta.style.cssText = 'position:absolute;left:-9999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none;';
   }}
+  if (navigator.clipboard && window.isSecureContext) {{
+    navigator.clipboard.writeText(txt).then(done, fall);
+  }} else {{ fall(); }}
 }}
 </script>
 </body>
 </html>
         """,
-        height=420,
+        height=490,
         scrolling=False,
     )
 
@@ -710,36 +709,36 @@ def render_kpis(stats: dict):
     with c1:
         st.markdown(
             f'<div style="{kpi_style}">'
-            f'<div style="font-size:22px;font-weight:900;color:#4ade80;letter-spacing:-0.5px;">'
+            f'<div style="font-size:28px;font-weight:900;color:#4ade80;letter-spacing:-0.5px;">'
             f'{stats["cagr"]*100:.1f}%</div>'
-            f'<div style="font-size:9.5px;color:#475569;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:4px;">CAGR</div>'
+            f'<div style="font-size:12px;color:#475569;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:5px;">CAGR</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
     with c2:
         st.markdown(
             f'<div style="{kpi_style}">'
-            f'<div style="font-size:22px;font-weight:900;color:#f87171;letter-spacing:-0.5px;">'
+            f'<div style="font-size:28px;font-weight:900;color:#f87171;letter-spacing:-0.5px;">'
             f'{stats["mdd"]*100:.1f}%</div>'
-            f'<div style="font-size:9.5px;color:#475569;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:4px;">最大回撤</div>'
+            f'<div style="font-size:12px;color:#475569;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:5px;">最大回撤</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
     with c3:
         st.markdown(
             f'<div style="{kpi_style}">'
-            f'<div style="font-size:22px;font-weight:900;color:#818cf8;letter-spacing:-0.5px;">'
+            f'<div style="font-size:28px;font-weight:900;color:#818cf8;letter-spacing:-0.5px;">'
             f'${stats["init_10k"]:,.0f}</div>'
-            f'<div style="font-size:9.5px;color:#475569;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:4px;">$10k 增長至</div>'
+            f'<div style="font-size:12px;color:#475569;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:5px;">$10k 增長至</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
     with c4:
         st.markdown(
             f'<div style="{kpi_style}">'
-            f'<div style="font-size:22px;font-weight:900;color:#fbbf24;letter-spacing:-0.5px;">'
+            f'<div style="font-size:28px;font-weight:900;color:#fbbf24;letter-spacing:-0.5px;">'
             f'{stats["n_years"]:.1f}</div>'
-            f'<div style="font-size:9.5px;color:#475569;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:4px;">回測年數</div>'
+            f'<div style="font-size:12px;color:#475569;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:5px;">回測年數</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -828,6 +827,12 @@ def render_allocation_heatmap(prices: pd.DataFrame):
         if pd.notna(r):
             ret_map[(y, m)] = float(r)
 
+    # Annual returns per year
+    annual_ret: dict = {}
+    for (y, m), r in ret_map.items():
+        annual_ret[y] = annual_ret.get(y, 0.0)
+        annual_ret[y] = (1 + annual_ret[y]) * (1 + r) - 1
+
     color_map = {"SPY": "#818cf8", "VEU": "#34d399", "BIL": "#fbbf24"}
     months_lbl = ["Jan","Feb","Mar","Apr","May","Jun",
                   "Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -871,10 +876,23 @@ def render_allocation_heatmap(prices: pd.DataFrame):
                 f'border-radius:5px;min-width:36px;vertical-align:top;">'
                 f'{etf}{ret_block}</td>'
             )
+        # Year label with annual return below
+        yr_ret = annual_ret.get(y)
+        if yr_ret is not None:
+            yr_clr  = "#4ade80" if yr_ret >= 0 else "#f87171"
+            yr_sign = "+" if yr_ret >= 0 else ""
+            yr_ret_html = (
+                f'<div style="font-size:10px;color:{yr_clr};font-weight:700;'
+                f'margin-top:3px;white-space:nowrap;">{yr_sign}{yr_ret*100:.1f}%</div>'
+            )
+        else:
+            yr_ret_html = ""
+
         rows_html.append(
             f"<tr>"
-            f"<td style='font-size:10px;color:#475569;padding-right:10px;"
-            f"white-space:nowrap;vertical-align:middle;'>{y}</td>"
+            f"<td style='font-size:11px;color:#94a3b8;font-weight:700;padding-right:10px;"
+            f"white-space:nowrap;vertical-align:middle;text-align:right;'>"
+            f"{y}{yr_ret_html}</td>"
             + "".join(cells_html)
             + "</tr>"
         )
@@ -964,8 +982,8 @@ def render_footer():
 # ══════════════════════════════════════════════════════════
 def section_header(icon: str, title: str):
     st.markdown(
-        f'<div style="font-size:10px;color:#64748b;font-weight:800;'
-        f'text-transform:uppercase;letter-spacing:1.5px;margin:20px 0 10px;">'
+        f'<div style="font-size:14px;color:#94a3b8;font-weight:800;'
+        f'text-transform:uppercase;letter-spacing:1.5px;margin:24px 0 12px;">'
         f'{icon}&nbsp; {title}</div>',
         unsafe_allow_html=True,
     )
