@@ -361,84 +361,103 @@ def render_signal_card(info: dict):
     # Change badge
     if changed:
         change_html = (
-            f'<span style="display:inline-flex;align-items:center;gap:5px;'
-            f'background:#451a03;color:#fbbf24;padding:5px 12px;border-radius:100px;'
-            f'font-size:11px;font-weight:700;">🔄 由 {prev} 轉換至 {sig}</span>'
+            f'<span class="badge" style="background:#451a03;color:#fbbf24;">'
+            f'🔄 由 {prev} 轉換至 {sig}</span>'
         )
     else:
         change_html = (
-            f'<span style="display:inline-flex;align-items:center;gap:5px;'
-            f'background:#052e16;color:#4ade80;padding:5px 12px;border-radius:100px;'
-            f'font-size:11px;font-weight:700;">✅ 維持 {sig} — 無需換倉</span>'
+            f'<span class="badge" style="background:#052e16;color:#4ade80;">'
+            f'✅ 維持 {sig} — 無需換倉</span>'
         )
 
     # Return badge
     if last_ret is not None:
-        pct    = f"{last_ret*100:+.2f}%"
-        r_bg   = "#052e16" if last_ret >= 0 else "#450a0a"
-        r_clr  = "#4ade80" if last_ret >= 0 else "#f87171"
-        arrow  = "↑" if last_ret >= 0 else "↓"
+        pct   = f"{last_ret*100:+.2f}%"
+        r_bg  = "#052e16" if last_ret >= 0 else "#450a0a"
+        r_clr = "#4ade80" if last_ret >= 0 else "#f87171"
+        arrow = "↑" if last_ret >= 0 else "↓"
         ret_html = (
-            f'<span style="display:inline-flex;align-items:center;gap:5px;'
-            f'background:{r_bg};color:{r_clr};padding:5px 12px;border-radius:100px;'
-            f'font-size:11px;font-weight:700;">{arrow} 上月回報 {pct}</span>'
+            f'<span class="badge" style="background:{r_bg};color:{r_clr};">'
+            f'{arrow} 上月回報 {pct}</span>'
         )
     else:
         ret_html = ""
 
-    st.markdown(
+    # Use components.html so HTML always renders correctly regardless of Streamlit version
+    components.html(
         f"""
-<div style="
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  * {{ box-sizing:border-box; margin:0; padding:0;
+       font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; }}
+  body {{ background:transparent; padding:0; margin:0; }}
+  .card {{
     background: linear-gradient(135deg, #0f1a35 0%, {bg} 100%);
-    border: 1.5px solid {clr}33;
+    border: 1.5px solid {clr}55;
     border-radius: 20px;
-    padding: 28px 28px 24px;
-    margin-bottom: 16px;
+    padding: 24px 24px 20px;
     position: relative;
     overflow: hidden;
-">
-    <!-- glow -->
-    <div style="
-        position:absolute; top:-60px; right:-60px;
-        width:200px; height:200px;
-        background: radial-gradient(circle, {clr}18 0%, transparent 70%);
-        pointer-events:none;
-    "></div>
-
-    <!-- header row -->
-    <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:18px; flex-wrap:wrap; gap:8px;">
-        <div>
-            <div style="font-size:10px; color:#475569; font-weight:800; text-transform:uppercase; letter-spacing:2px; margin-bottom:4px;">
-                {month_str} 訊號
-            </div>
-            <div style="font-size:10px; color:#334155;">
-                數據截至 {data_str}
-            </div>
-        </div>
-        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
-            {change_html}
-            {ret_html}
-        </div>
+  }}
+  .glow {{
+    position:absolute; top:-60px; right:-60px;
+    width:200px; height:200px;
+    background: radial-gradient(circle, {clr}22 0%, transparent 70%);
+    pointer-events:none;
+  }}
+  .top-row {{
+    display:flex; justify-content:space-between;
+    align-items:flex-start; flex-wrap:wrap; gap:8px;
+    margin-bottom:16px;
+  }}
+  .label {{ font-size:10px; color:#475569; font-weight:800;
+             text-transform:uppercase; letter-spacing:2px; margin-bottom:4px; }}
+  .date  {{ font-size:10px; color:#334155; }}
+  .badges {{ display:flex; flex-direction:column; align-items:flex-end; gap:6px; }}
+  .badge {{
+    display:inline-flex; align-items:center; gap:4px;
+    padding:5px 12px; border-radius:100px;
+    font-size:11px; font-weight:700;
+  }}
+  .main-row {{ display:flex; align-items:center; gap:20px; }}
+  .ticker {{
+    font-size:78px; font-weight:900; color:{clr};
+    letter-spacing:-4px; line-height:1;
+    text-shadow: 0 0 40px {clr}55;
+  }}
+  .etf-name {{ font-size:14px; color:#cbd5e1; font-weight:700; margin-bottom:4px; }}
+  .etf-cls  {{ font-size:12px; color:#64748b; }}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="glow"></div>
+  <div class="top-row">
+    <div>
+      <div class="label">{month_str} 訊號</div>
+      <div class="date">數據截至 {data_str}</div>
     </div>
-
-    <!-- main signal -->
-    <div style="display:flex; align-items:center; gap:24px;">
-        <div style="
-            font-size: 80px;
-            font-weight: 900;
-            color: {clr};
-            letter-spacing: -4px;
-            line-height: 1;
-            text-shadow: 0 0 40px {clr}44;
-        ">{sig}</div>
-        <div>
-            <div style="font-size:15px; color:#cbd5e1; font-weight:700; margin-bottom:5px;">{name}</div>
-            <div style="font-size:12px; color:#64748b;">{cls}</div>
-        </div>
+    <div class="badges">
+      {change_html}
+      {ret_html}
     </div>
+  </div>
+  <div class="main-row">
+    <div class="ticker">{sig}</div>
+    <div>
+      <div class="etf-name">{name}</div>
+      <div class="etf-cls">{cls}</div>
+    </div>
+  </div>
 </div>
+</body>
+</html>
         """,
-        unsafe_allow_html=True,
+        height=200,
+        scrolling=False,
     )
 
 
