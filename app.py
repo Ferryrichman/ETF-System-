@@ -129,70 +129,93 @@ div[data-testid="stTextArea"] label { display: none; }
 # ══════════════════════════════════════════════════════════
 #  DATA LAYER
 # ══════════════════════════════════════════════════════════
-def _get_close_series(t: str, start, end) -> pd.Series:
+def _get_daily_close(t: str, start, end) -> pd.Series:
     """
-    Robustly fetch monthly-resampled Adj Close for one ticker.
-    Handles yfinance API changes (single-ticker vs multi-level columns)
-    and retries on transient Yahoo Finance errors.
+    Robustly fetch DAILY close prices for one ticker.
+    Tries Ticker.history first, falls back to yf.download.
+    Retries with exponential back-off on transient Yahoo Finance errors.
     """
     start_str = start.strftime("%Y-%m-%d")
     end_str   = end.strftime("%Y-%m-%d")
 
     for attempt in range(4):
         try:
-            # ── Method 1: Ticker.history (most reliable on cloud) ──
+            # ── Method 1: Ticker.history ──
             tk  = yf.Ticker(t)
             raw = tk.history(start=start_str, end=end_str, auto_adjust=True)
             if not raw.empty and "Close" in raw.columns:
-                return raw["Close"].resample("ME").last()
+                s = raw["Close"]
+                if isinstance(s, pd.DataFrame):
+                    s = s.squeeze()
+                return s.sort_index()
         except Exception:
             pass
 
         try:
-            # ── Method 2: yf.download single ticker ──
+            # ── Method 2: yf.download ──
             raw = yf.download(t, start=start_str, end=end_str,
                               progress=False, auto_adjust=True)
             if not raw.empty:
-                # New yfinance returns MultiIndex (metric, ticker)
                 if isinstance(raw.columns, pd.MultiIndex):
                     col = raw["Close"]
-                    series = col[t] if t in col.columns else col.iloc[:, 0]
+                    s = col[t] if t in col.columns else col.iloc[:, 0]
                 elif "Close" in raw.columns:
-                    series = raw["Close"]
+                    s = raw["Close"]
                 elif "Adj Close" in raw.columns:
-                    series = raw["Adj Close"]
+                    s = raw["Adj Close"]
                 else:
-                    series = raw.iloc[:, 0]
-                if isinstance(series, pd.DataFrame):
-                    series = series.squeeze()
-                return series.resample("ME").last()
+                    s = raw.iloc[:, 0]
+                if isinstance(s, pd.DataFrame):
+                    s = s.squeeze()
+                return s.sort_index()
         except Exception:
             pass
 
-        time.sleep(2 ** attempt)   # exponential back-off: 1s, 2s, 4s, 8s
+        time.sleep(2 ** attempt)
 
-    return pd.Series(dtype=float)  # empty — caller handles
+    return pd.Series(dtype=float)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_prices() -> pd.DataFrame:
-    """Download monthly end-of-month Adj-Close for SPY / VEU / BIL."""
+    """
+    Download daily prices and compute two monthly series per ETF:
+      {t}        – last trading day close  → for momentum signal calculation
+      {t}_first  – first trading day close → buy-in price for return calculation
+
+    Correct return formula (matching user's actual trading):
+      Monthly return = last trading day close ÷ first trading day close − 1
+    """
     end   = datetime.today()
     start = end - relativedelta(years=22)
-    frames = {}
+
+    end_frames   = {}   # month-end close   (signal)
+    first_frames = {}   # month-start close (buy-in)
+
     for t in TICKERS:
-        s = _get_close_series(t, start, end)
-        if s.empty:
+        daily = _get_daily_close(t, start, end)
+        if daily.empty:
             st.error(
                 f"⚠️ 無法從 Yahoo Finance 下載 **{t}** 數據。\n\n"
-                "可能原因：Yahoo Finance 暫時限制，請等候 1-2 分鐘後重新整理頁面（F5）。"
+                "Yahoo Finance 暫時限制，請等候 1-2 分鐘後重新整理頁面（F5）。"
             )
             st.stop()
-        frames[t] = s
-    df = pd.DataFrame(frames).dropna()
+
+        # Last trading day close of each month (for momentum lookback)
+        end_frames[t]   = daily.resample("ME").last()
+        # First trading day close of each month (buy-in price)
+        first_frames[t] = daily.resample("ME").first()
+
+    # Main DataFrame indexed by month-end dates
+    df = pd.DataFrame(end_frames).dropna()
     if df.empty:
         st.error("數據合併失敗，請重新整理頁面。")
         st.stop()
+
+    # Attach first-trading-day prices (same month-end index)
+    for t in TICKERS:
+        df[f"{t}_first"] = first_frames[t].reindex(df.index)
+
     return df
 
 
@@ -227,13 +250,17 @@ def compute_signals(df: pd.DataFrame) -> pd.DataFrame:
         score_filled.loc[has_any_valid].idxmax(axis=1).values
     )
 
-    # Monthly strategy return:
-    # Signal at row i → hold that ETF during month i+1
+    # Monthly strategy return (correct formula):
+    # Signal determined at end of month M → hold ETF during month M+1
+    # Buy:  first trading day close of month M+1  → prices[f"{t}_first"] at row M+1
+    # Sell: last  trading day close of month M+1  → prices[t]            at row M+1
+    # Return = last_close / first_close - 1
     prev_sig = prices["signal"].shift(1)
     prices["signal_return"] = np.nan
     for t in TICKERS:
         mask = prev_sig == t
-        prices.loc[mask, "signal_return"] = prices[t].pct_change()[mask]
+        holding_ret = prices[t] / prices[f"{t}_first"] - 1
+        prices.loc[mask, "signal_return"] = holding_ret[mask]
 
     return prices
 
@@ -271,19 +298,39 @@ def calc_stats(prices: pd.DataFrame) -> dict:
     total    = float(cum.iloc[-1] - 1)
     n_yrs    = len(monthly) / 12
     cagr     = float((1 + total) ** (1 / n_yrs) - 1)
-    drawdown = (cum - cum.cummax()) / cum.cummax()
-    mdd      = float(drawdown.min())
-    changes  = int((prices["signal"] != prices["signal"].shift(1)).sum())
+
+    # MDD with start/end dates
+    running_max = cum.cummax()
+    drawdown    = (cum - running_max) / running_max
+    mdd         = float(drawdown.min())
+    mdd_end     = drawdown.idxmin()
+    mdd_start   = cum[:mdd_end].idxmax()
+
+    # Trailing 3-year and 5-year annualised returns
+    def trailing_cagr(years: int):
+        cutoff = monthly.index[-1] - relativedelta(years=years)
+        sub = monthly[monthly.index > cutoff]
+        if len(sub) < 6:
+            return None
+        r = float((1 + sub).prod() - 1)
+        n = len(sub) / 12
+        return float((1 + r) ** (1 / n) - 1) if n > 0 else None
+
+    changes = int((prices["signal"] != prices["signal"].shift(1)).sum())
 
     return {
         "cagr":       cagr,
         "mdd":        mdd,
+        "mdd_start":  mdd_start,
+        "mdd_end":    mdd_end,
         "total_ret":  total,
         "n_years":    n_yrs,
         "init_10k":   float(cum.iloc[-1] * 10000),
         "trades_yr":  changes / n_yrs,
         "monthly":    monthly,
         "cumulative": cum * 10000,
+        "cagr_3yr":   trailing_cagr(3),
+        "cagr_5yr":   trailing_cagr(5),
     }
 
 
@@ -398,38 +445,38 @@ def render_signal_card(info: dict):
     background: linear-gradient(135deg, #0f1a35 0%, {bg} 100%);
     border: 1.5px solid {clr}55;
     border-radius: 20px;
-    padding: 24px 24px 20px;
+    padding: 26px 28px 22px;
     position: relative;
     overflow: hidden;
   }}
   .glow {{
     position:absolute; top:-60px; right:-60px;
-    width:200px; height:200px;
+    width:220px; height:220px;
     background: radial-gradient(circle, {clr}22 0%, transparent 70%);
     pointer-events:none;
   }}
   .top-row {{
     display:flex; justify-content:space-between;
-    align-items:flex-start; flex-wrap:wrap; gap:8px;
-    margin-bottom:16px;
+    align-items:flex-start; flex-wrap:wrap; gap:10px;
+    margin-bottom:18px;
   }}
-  .label {{ font-size:10px; color:#475569; font-weight:800;
-             text-transform:uppercase; letter-spacing:2px; margin-bottom:4px; }}
-  .date  {{ font-size:10px; color:#334155; }}
-  .badges {{ display:flex; flex-direction:column; align-items:flex-end; gap:6px; }}
+  .label {{ font-size:12px; color:#64748b; font-weight:800;
+             text-transform:uppercase; letter-spacing:2px; margin-bottom:5px; }}
+  .date  {{ font-size:12px; color:#475569; }}
+  .badges {{ display:flex; flex-direction:column; align-items:flex-end; gap:7px; }}
   .badge {{
-    display:inline-flex; align-items:center; gap:4px;
-    padding:5px 12px; border-radius:100px;
-    font-size:11px; font-weight:700;
+    display:inline-flex; align-items:center; gap:5px;
+    padding:7px 16px; border-radius:100px;
+    font-size:13px; font-weight:700;
   }}
-  .main-row {{ display:flex; align-items:center; gap:20px; }}
+  .main-row {{ display:flex; align-items:center; gap:24px; }}
   .ticker {{
-    font-size:78px; font-weight:900; color:{clr};
-    letter-spacing:-4px; line-height:1;
-    text-shadow: 0 0 40px {clr}55;
+    font-size:96px; font-weight:900; color:{clr};
+    letter-spacing:-5px; line-height:1;
+    text-shadow: 0 0 50px {clr}55;
   }}
-  .etf-name {{ font-size:14px; color:#cbd5e1; font-weight:700; margin-bottom:4px; }}
-  .etf-cls  {{ font-size:12px; color:#64748b; }}
+  .etf-name {{ font-size:16px; color:#cbd5e1; font-weight:700; margin-bottom:6px; }}
+  .etf-cls  {{ font-size:14px; color:#64748b; }}
 </style>
 </head>
 <body>
@@ -456,7 +503,7 @@ def render_signal_card(info: dict):
 </body>
 </html>
         """,
-        height=200,
+        height=230,
         scrolling=False,
     )
 
@@ -501,19 +548,35 @@ def render_whatsapp_section(info: dict, stats: dict):
     last_ret = info["last_ret"]
     now      = info["now"]
 
-    month_en = now.strftime("%B %Y")
-    ret_str  = f"{last_ret*100:+.2f}%" if last_ret is not None else "N/A"
+    # Month display: e.g. "4月2026"
+    month_str = f"{now.month}月{now.year}"
+
+    # Return string — show sign only when negative so it reads naturally
+    if last_ret is not None:
+        ret_str = f"{last_ret*100:.2f}%" if last_ret >= 0 else f"{last_ret*100:.2f}%"
+    else:
+        ret_str = "N/A"
+
     change_line = (
         f"🔄 ETF 轉換：{prev} → {sig}"
         if changed
         else f"✅ 維持上月持倉：{sig} 不變，無需換倉"
     )
 
+    # MDD period
+    mdd_start_str = stats["mdd_start"].strftime("%Y-%m") if stats.get("mdd_start") is not None else "—"
+    mdd_end_str   = stats["mdd_end"].strftime("%Y-%m")   if stats.get("mdd_end")   is not None else "—"
+    mdd_period    = f"（{mdd_start_str} ~ {mdd_end_str}）"
+
+    # Trailing returns
+    c3 = stats.get("cagr_3yr")
+    c5 = stats.get("cagr_5yr")
+    yr3_line = f"3年年化回報：{c3*100:.1f}%" if c3 is not None else "3年年化回報：數據不足"
+    yr5_line = f"5年年化回報：{c5*100:.1f}%" if c5 is not None else "5年年化回報：數據不足"
+
     msg = (
-        f"📊【QRS Standard Signal】{month_en}\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"✅ 本月持倉：{sig}\n"
-        f"   {ETF_INFO[sig]['name']}\n"
+        f"📊【FRM Standard Signal】{month_str}\n"
+        f"✅ 本月持倉：{sig}   {ETF_INFO[sig]['name']}\n"
         f"\n"
         f"{change_line}\n"
         f"📈 上月策略回報：{ret_str}\n"
@@ -521,9 +584,11 @@ def render_whatsapp_section(info: dict, stats: dict):
         f"📅 執行時間：本月第一個交易日\n"
         f"⏰ 美股開市後任何時間均可執行\n"
         f"\n"
-        f"回測CAGR：{stats['cagr']*100:.1f}%  |  MDD：{stats['mdd']*100:.1f}%\n"
+        f"回測CAGR：{stats['cagr']*100:.1f}%  |  MDD：{stats['mdd']*100:.1f}% {mdd_period}\n"
+        f"{yr3_line}\n"
+        f"{yr5_line}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"@QRS Standard · FerryRichMan Limited\n"
+        f"@FRM Standard · FerryRichMan Limited\n"
         f"（不構成任何投資建議）"
     )
 
@@ -545,8 +610,17 @@ def render_whatsapp_section(info: dict, stats: dict):
 
     components.html(
         f"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
 <style>
-  body {{ margin:0; font-family:-apple-system,sans-serif; background:transparent; }}
+  * {{ box-sizing:border-box; margin:0; padding:0; }}
+  body {{
+    margin:0; padding:0;
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    background:transparent;
+  }}
   .lbl {{
     font-size:10px; color:#64748b; font-weight:800;
     text-transform:uppercase; letter-spacing:1.5px; margin-bottom:10px;
@@ -558,53 +632,68 @@ def render_whatsapp_section(info: dict, stats: dict):
     padding:16px 18px;
     font-size:12px;
     color:#94a3b8;
-    line-height:1.8;
+    line-height:1.85;
     font-family:'Courier New',monospace;
-    margin-bottom:12px;
+    margin-bottom:14px;
     white-space:pre-wrap;
+    word-break:break-word;
   }}
   .btn {{
+    display:inline-block;
     background: linear-gradient(135deg, #6366f1, #8b5cf6);
-    color: white;
+    color: #fff;
     border: none;
     border-radius: 10px;
-    padding: 11px 28px;
-    font-size: 13px;
+    padding: 12px 32px;
+    font-size: 14px;
     font-weight: 700;
     cursor: pointer;
-    letter-spacing: 0.2px;
+    letter-spacing: 0.3px;
     transition: all 0.2s;
-    box-shadow: 0 4px 15px rgba(99,102,241,0.3);
+    box-shadow: 0 4px 15px rgba(99,102,241,0.35);
+    width:100%;
+    text-align:center;
   }}
-  .btn:hover {{ transform: translateY(-1px); box-shadow: 0 6px 20px rgba(99,102,241,0.4); }}
-  .btn.ok {{ background: linear-gradient(135deg,#059669,#047857); box-shadow: 0 4px 15px rgba(5,150,105,0.3); }}
+  .btn:hover {{ opacity:0.9; transform: translateY(-1px); }}
+  .btn.ok {{
+    background: linear-gradient(135deg,#059669,#047857);
+    box-shadow: 0 4px 15px rgba(5,150,105,0.35);
+  }}
 </style>
+</head>
+<body>
 <div class="lbl">📱 WhatsApp 訊息</div>
 <div class="msg">{html_msg}</div>
 <button class="btn" id="b" onclick="cp()">📋 一鍵複製</button>
 <script>
 function cp() {{
-  const t = `{js_msg}`;
-  const b = document.getElementById('b');
-  const done = () => {{
-    b.className='btn ok';
-    b.innerHTML='✅ 已複製！可直接貼到 WhatsApp';
-    setTimeout(()=>{{b.className='btn';b.innerHTML='📋 一鍵複製';}},3000);
-  }};
-  if(navigator.clipboard) {{
-    navigator.clipboard.writeText(t).then(done,fall);
+  var t = `{js_msg}`;
+  var b = document.getElementById('b');
+  function done() {{
+    b.className = 'btn ok';
+    b.innerHTML = '✅ 已複製！可直接貼到 WhatsApp';
+    setTimeout(function(){{ b.className='btn'; b.innerHTML='📋 一鍵複製'; }}, 3000);
+  }}
+  if (navigator.clipboard && navigator.clipboard.writeText) {{
+    navigator.clipboard.writeText(t).then(done, fall);
   }} else {{ fall(); }}
   function fall() {{
-    const x=document.createElement('textarea');
-    x.value=t; x.style.position='fixed'; x.style.opacity='0';
-    document.body.appendChild(x); x.select();
-    try{{document.execCommand('copy');done();}}catch(e){{}}
+    var x = document.createElement('textarea');
+    x.value = t;
+    x.setAttribute('readonly', '');
+    x.style.cssText = 'position:fixed;top:0;left:0;opacity:0;';
+    document.body.appendChild(x);
+    x.select();
+    x.setSelectionRange(0, 99999);
+    try {{ document.execCommand('copy'); done(); }} catch(e) {{ alert('請手動複製上方訊息'); }}
     document.body.removeChild(x);
   }}
 }}
 </script>
+</body>
+</html>
         """,
-        height=310,
+        height=420,
         scrolling=False,
     )
 
@@ -720,55 +809,94 @@ def render_cumulative_chart(stats: dict):
 
 
 def render_allocation_heatmap(prices: pd.DataFrame):
-    """Show year × month allocation grid (SPY / VEU / BIL)."""
-    sig = prices["signal"].dropna()
-    rows = {}
-    for dt, s in sig.items():
-        rows.setdefault(dt.year, {})[dt.month] = s
+    """Show year × month grid: ETF held + return earned that month."""
 
-    color_map = {"SPY": "#818cf8", "VEU": "#34d399", "BIL": "#fbbf24", "": "#1e293b"}
-    months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
-    years  = sorted(rows.keys())
+    # ETF held in month M  = signal determined at end of month M-1
+    # Return earned in M   = signal_return at index M
+    held   = prices["signal"].shift(1)        # what we actually held this month
+    ret_s  = prices["signal_return"]          # return earned this month
 
-    cells = []
-    for y in years:
-        row_cells = []
-        for m in range(1, 13):
-            s = rows.get(y, {}).get(m, "")
-            row_cells.append(
-                f'<td style="background:{color_map.get(s,"#1e293b")};'
-                f'color:#0a0f1e;font-weight:700;font-size:9px;'
-                f'padding:5px 3px;text-align:center;border-radius:4px;'
-                f'min-width:32px;">{s}</td>'
-            )
-        cells.append(
-            f"<tr><td style='font-size:10px;color:#475569;padding-right:10px;white-space:nowrap;'>{y}</td>"
-            + "".join(row_cells)
-            + "</tr>"
-        )
+    # Build lookup dicts keyed by (year, month)
+    etf_map: dict = {}
+    ret_map: dict = {}
+    for dt in prices.index:
+        y, m = dt.year, dt.month
+        e = held.loc[dt]
+        r = ret_s.loc[dt]
+        if pd.notna(e):
+            etf_map[(y, m)] = str(e)
+        if pd.notna(r):
+            ret_map[(y, m)] = float(r)
+
+    color_map = {"SPY": "#818cf8", "VEU": "#34d399", "BIL": "#fbbf24"}
+    months_lbl = ["Jan","Feb","Mar","Apr","May","Jun",
+                  "Jul","Aug","Sep","Oct","Nov","Dec"]
+    years = sorted({k[0] for k in etf_map})
 
     header_row = (
         "<tr><th></th>"
         + "".join(
-            f'<th style="font-size:9px;color:#475569;font-weight:700;padding:3px 3px 8px;text-align:center;">{m}</th>'
-            for m in months
+            f'<th style="font-size:9px;color:#475569;font-weight:700;'
+            f'padding:3px 3px 8px;text-align:center;">{ml}</th>'
+            for ml in months_lbl
         )
         + "</tr>"
     )
 
+    rows_html = []
+    for y in years:
+        cells_html = []
+        for m in range(1, 13):
+            etf = etf_map.get((y, m), "")
+            ret = ret_map.get((y, m), None)
+            bg  = color_map.get(etf, "#1a2035")
+
+            # Monthly return text
+            if ret is not None:
+                pct      = f"{ret*100:+.1f}%"
+                ret_clr  = "#052e16" if ret >= 0 else "#450a0a"
+                txt_clr  = "#4ade80" if ret >= 0 else "#f87171"
+                ret_block = (
+                    f'<div style="font-size:8px;color:{txt_clr};'
+                    f'background:{ret_clr};border-radius:3px;'
+                    f'padding:1px 3px;margin-top:3px;line-height:1.3;">'
+                    f'{pct}</div>'
+                )
+            else:
+                ret_block = ""
+
+            cells_html.append(
+                f'<td style="background:{bg};color:#0a0f1e;font-weight:800;'
+                f'font-size:9px;padding:5px 3px 4px;text-align:center;'
+                f'border-radius:5px;min-width:36px;vertical-align:top;">'
+                f'{etf}{ret_block}</td>'
+            )
+        rows_html.append(
+            f"<tr>"
+            f"<td style='font-size:10px;color:#475569;padding-right:10px;"
+            f"white-space:nowrap;vertical-align:middle;'>{y}</td>"
+            + "".join(cells_html)
+            + "</tr>"
+        )
+
     legend = "".join(
         f'<span style="display:inline-flex;align-items:center;gap:4px;margin-right:14px;">'
-        f'<span style="width:10px;height:10px;border-radius:2px;background:{color_map[t]};display:inline-block;"></span>'
+        f'<span style="width:10px;height:10px;border-radius:2px;'
+        f'background:{color_map[t]};display:inline-block;"></span>'
         f'<span style="font-size:10px;color:#64748b;">{t}</span></span>'
         for t in ["SPY", "VEU", "BIL"]
     )
 
     html = f"""
 <div style="overflow-x:auto;">
-  <div style="margin-bottom:10px;">{legend}</div>
+  <div style="margin-bottom:10px;">{legend}
+    <span style="font-size:10px;color:#475569;margin-left:8px;">
+      （每格顯示：持倉ETF + 當月回報）
+    </span>
+  </div>
   <table style="border-collapse:separate;border-spacing:3px;width:100%;">
     {header_row}
-    {"".join(cells)}
+    {"".join(rows_html)}
   </table>
 </div>
     """
