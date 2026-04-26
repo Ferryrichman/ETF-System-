@@ -221,8 +221,11 @@ def compute_signals(df: pd.DataFrame) -> pd.DataFrame:
     score_df.columns = TICKERS
     has_any_valid = score_df.notna().any(axis=1)
     score_filled  = score_df.fillna(-np.inf)
-    prices["signal"] = np.nan
-    prices.loc[has_any_valid, "signal"] = score_filled.loc[has_any_valid].idxmax(axis=1)
+    # Use object dtype so string ticker names can be assigned
+    prices["signal"] = pd.Series(dtype=object, index=prices.index)
+    prices.loc[has_any_valid, "signal"] = (
+        score_filled.loc[has_any_valid].idxmax(axis=1).values
+    )
 
     # Monthly strategy return:
     # Signal at row i → hold that ETF during month i+1
