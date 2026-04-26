@@ -216,9 +216,13 @@ def compute_signals(df: pd.DataFrame) -> pd.DataFrame:
         )
 
     # Signal = ETF with highest weighted score
+    # Use fillna(-inf) so NaN scores never win; skip rows where ALL are NaN
     score_df = prices[[f"score_{t}" for t in TICKERS]].copy()
     score_df.columns = TICKERS
-    prices["signal"] = score_df.idxmax(axis=1)
+    has_any_valid = score_df.notna().any(axis=1)
+    score_filled  = score_df.fillna(-np.inf)
+    prices["signal"] = np.nan
+    prices.loc[has_any_valid, "signal"] = score_filled.loc[has_any_valid].idxmax(axis=1)
 
     # Monthly strategy return:
     # Signal at row i → hold that ETF during month i+1
