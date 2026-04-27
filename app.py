@@ -182,19 +182,16 @@ def _get_daily_ohlc(t: str, start, end) -> pd.DataFrame:
         result["Close"] = raw_c                         # raw close      (for momentum)
         return result.sort_index()
 
+    # IMPORTANT: Only use yf.download(auto_adjust=False), NOT Ticker.history().
+    # Ticker.history() returns Adj Close in its "Close" column regardless of the
+    # auto_adjust flag in many yfinance versions — this silently corrupts momentum.
+    # yf.download(auto_adjust=False) reliably returns RAW close + Adj Close separately.
     for attempt in range(4):
         try:
-            tk  = yf.Ticker(t)
-            # auto_adjust=False → returns raw OHLC (unadjusted close)
-            raw = tk.history(start=start_str, end=end_str, auto_adjust=False)
-            if not raw.empty and "Close" in raw.columns:
-                return _extract(raw)
-        except Exception:
-            pass
-
-        try:
-            raw = yf.download(t, start=start_str, end=end_str,
-                              progress=False, auto_adjust=False)
+            raw = yf.download(
+                t, start=start_str, end=end_str,
+                progress=False, auto_adjust=False, actions=False,
+            )
             if not raw.empty:
                 return _extract(raw)
         except Exception:
