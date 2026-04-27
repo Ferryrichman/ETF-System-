@@ -189,13 +189,13 @@ def _get_daily_ohlc(t: str, start, end) -> pd.DataFrame:
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_prices() -> pd.DataFrame:
     """
-    Download daily OHLC and compute two monthly series per ETF:
-      {t}       – last trading day CLOSE  → momentum signal lookback
-      {t}_open  – first trading day OPEN  → actual buy / sell price
+    Download daily adj OHLC and compute two monthly series per ETF:
+      {t}       – last trading day adj CLOSE  → momentum signal (matches Excel Adj Close)
+      {t}_open  – first trading day adj OPEN  → actual buy / sell price
 
-    Correct return formula (user's actual trading):
-      Monthly return = first_open(M+1) ÷ first_open(M) − 1
+    Monthly return = adj_open(M+1) ÷ adj_open(M) − 1
     """
+    _CACHE_VERSION = "adj_v4"   # ← bump this string to force a fresh download
     end   = datetime.today()
     start = end - relativedelta(years=22)
 
