@@ -195,7 +195,7 @@ def load_prices() -> pd.DataFrame:
 
     Monthly return = adj_open(M+1) ÷ adj_open(M) − 1
     """
-    _CACHE_VERSION = "adj_v5"   # ← bump this string to force a fresh download
+    _CACHE_VERSION = "adj_v6"   # ← bump this string to force a fresh download
     end   = datetime.today()
     start = end - relativedelta(years=22)
 
@@ -273,40 +273,22 @@ def compute_signals(df: pd.DataFrame) -> pd.DataFrame:
         score_filled.loc[has_any_valid].idxmax(axis=1).values
     )
 
-    # Monthly strategy return (correct formula):
-    # Signal determined at end of month M → trade on first day of month M+1
+    # ── Monthly strategy return ───────────────────────────────────────────────
+    # Signal at end of month M → hold ETF during month M+1.
+    # Buy  open: first trading day of M+1  = prices["{t}_open"] at row M+1
+    # Sell open: first trading day of M+2  = prices["{t}_open"] at row M+2
+    # Return earned in month M+1 = open(row M+2) / open(row M+1) - 1
     #
-    # Buy:  first trading day OPEN of month M   → prices[f"{t}_open"] at row M
-    # Sell: first trading day OPEN of month M+1 → prices[f"{t}_open"] at row M+1
-    # Return = open(M+1) / open(M) - 1
+    # shift(-1) is correct here because we only need ADJACENT rows
+    # (consecutive months), not a long lookback across possible gaps.
     #
-    # In the DataFrame (indexed by month-end):
-    #   prices[f"{t}_open"]          at row M   = buy  price
-    #   prices[f"{t}_open"].shift(-1) at row M  = sell price (next month's open)
-    #
-    # prev_sig at row M = signal(M-1) → tells us which ETF we bought on day 1 of M
-    # ── Monthly return: date-based open lookup ────────────────────────────────
-    # Signal at end of month M → hold ETF during month M+1
-    # Buy open:  first trading day of M+1  = prices["{t}_open"] at index M+1
-    # Sell open: first trading day of M+2  = prices["{t}_open"] at index M+2
-    # Return = open(M+1 row) shifted to align with the signal row M
-    #
-    # prev_sig[M+1] = signal[M]  → tells us what we held in M+1
-    # holding_ret[M+1] = open(M+2)/open(M+1) - 1  → return earned in M+1
-    #
-    # Use date-based next-month lookup (robust to missing rows).
-    next_dates = prices.index + pd.DateOffset(months=1)
-    full_idx_o = prices.index.union(next_dates).sort_values()
-
+    # prev_sig[row M+1] = signal[row M] → what ETF we held in M+1
+    # holding_ret[row M+1] = open(M+2)/open(M+1) - 1
     prev_sig = prices["signal"].shift(1)
     prices["signal_return"] = np.nan
     for t in TICKERS:
-        mask = prev_sig == t
-        # next month's open = open at (current date + 1 month)
-        filled_o    = prices[f"{t}_open"].reindex(full_idx_o).ffill()
-        next_open   = filled_o.reindex(next_dates).values
-        holding_ret = pd.Series(next_open / prices[f"{t}_open"].values - 1,
-                                index=prices.index)
+        mask        = prev_sig == t
+        holding_ret = prices[f"{t}_open"].shift(-1) / prices[f"{t}_open"] - 1
         prices.loc[mask, "signal_return"] = holding_ret[mask]
 
     return prices
