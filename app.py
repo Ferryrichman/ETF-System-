@@ -195,7 +195,7 @@ def load_prices() -> pd.DataFrame:
 
     Monthly return = adj_open(M+1) ÷ adj_open(M) − 1
     """
-    _CACHE_VERSION = "adj_v4"   # ← bump this string to force a fresh download
+    _CACHE_VERSION = "adj_v5"   # ← bump this string to force a fresh download
     end   = datetime.today()
     start = end - relativedelta(years=22)
 
@@ -234,10 +234,23 @@ def compute_signals(df: pd.DataFrame) -> pd.DataFrame:
     """Calculate weighted momentum scores and monthly signals."""
     prices = df.copy()
 
-    # Lookback returns
+    # ── Date-based lookback returns ──────────────────────────────────────────
+    # IMPORTANT: We use pd.DateOffset (calendar months), NOT shift(m) (row count).
+    # shift(m) breaks when dropna() removes rows for missing ETF data, causing
+    # the 12-row lookback to land on the wrong calendar month (e.g. Dec 2018
+    # instead of Feb 2019), which silently corrupts all momentum scores.
+    #
+    # Method: for each month-end date, compute the target date (exactly m months
+    # earlier), build a forward-filled lookup series to handle any gaps, then
+    # divide current price by the looked-up prior price.
     for m in [3, 6, 9, 12]:
+        target_dates = prices.index - pd.DateOffset(months=m)
         for t in TICKERS:
-            prices[f"{t}_{m}m"] = prices[t] / prices[t].shift(m) - 1
+            # Union the index with target dates, ffill to cover any missing months
+            full_idx = prices.index.union(target_dates).sort_values()
+            filled   = prices[t].reindex(full_idx).ffill()
+            prior    = filled.reindex(target_dates).values
+            prices[f"{t}_{m}m"] = prices[t].values / prior - 1
 
     # Weighted score  (3M×0.8 + 6M×0.6 + 9M×0.4 + 12M×0.2)
     for t in TICKERS:
@@ -272,11 +285,28 @@ def compute_signals(df: pd.DataFrame) -> pd.DataFrame:
     #   prices[f"{t}_open"].shift(-1) at row M  = sell price (next month's open)
     #
     # prev_sig at row M = signal(M-1) → tells us which ETF we bought on day 1 of M
+    # ── Monthly return: date-based open lookup ────────────────────────────────
+    # Signal at end of month M → hold ETF during month M+1
+    # Buy open:  first trading day of M+1  = prices["{t}_open"] at index M+1
+    # Sell open: first trading day of M+2  = prices["{t}_open"] at index M+2
+    # Return = open(M+1 row) shifted to align with the signal row M
+    #
+    # prev_sig[M+1] = signal[M]  → tells us what we held in M+1
+    # holding_ret[M+1] = open(M+2)/open(M+1) - 1  → return earned in M+1
+    #
+    # Use date-based next-month lookup (robust to missing rows).
+    next_dates = prices.index + pd.DateOffset(months=1)
+    full_idx_o = prices.index.union(next_dates).sort_values()
+
     prev_sig = prices["signal"].shift(1)
     prices["signal_return"] = np.nan
     for t in TICKERS:
         mask = prev_sig == t
-        holding_ret = prices[f"{t}_open"].shift(-1) / prices[f"{t}_open"] - 1
+        # next month's open = open at (current date + 1 month)
+        filled_o    = prices[f"{t}_open"].reindex(full_idx_o).ffill()
+        next_open   = filled_o.reindex(next_dates).values
+        holding_ret = pd.Series(next_open / prices[f"{t}_open"].values - 1,
+                                index=prices.index)
         prices.loc[mask, "signal_return"] = holding_ret[mask]
 
     return prices
@@ -1083,70 +1113,7 @@ def render_momentum_table(prices: pd.DataFrame):
                 f"{t} {m}M", width=72
             )
     for t in TICKERS:
-        col_cfg[f"{t} 分"] = st.column_config.TextColumn(f"{t} 分", width=90)
-
-    st.dataframe(
-        df_disp,
-        use_container_width=True,
-        height=640,
-        hide_index=True,
-        column_config=col_cfg,
-    )
-
-
-# ══════════════════════════════════════════════════════════
-#  MAIN
-# ══════════════════════════════════════════════════════════
-def main():
-    inject_css()
-    render_header()
-
-    # ── Load Data ──
-    with st.spinner("正在獲取最新市場數據..."):
-        prices = load_prices()
-        prices = compute_signals(prices)
-
-    info   = get_current_info(prices)
-    stats  = calc_stats(prices)
-    annual = calc_annual(prices)
-
-    # ── Signal ──
-    render_signal_card(info)
-
-    # ── Scores ──
-    section_header("📊", "本月 ETF 動力分數比較")
-    st.markdown(
-        '<div style="background:#111827;border:1px solid #1e293b;border-radius:14px;padding:16px 16px 8px;">',
-        unsafe_allow_html=True,
-    )
-    if info:
-        render_scores_chart(info["scores"])
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    # ── WhatsApp ──
-    section_header("📱", "WhatsApp 訊息 — 一鍵複製後轉發")
-    if info:
-        render_whatsapp_section(info, stats)
-
-    # ── Performance Tabs ──
-    section_header("📈", "歷史績效")
-    render_kpis(stats)
-
-    tab1, tab2, tab3 = st.tabs(["  年度回報  ", "  增長曲線  ", "  持倉記錄  "])
-    with tab1:
-        render_annual_chart(annual)
-    with tab2:
-        render_cumulative_chart(stats)
-    with tab3:
-        render_allocation_heatmap(prices)
-
-    # ── Momentum Calculation Detail ──
-    section_header("🔢", "動力計算明細")
-    render_momentum_table(prices)
-
-    # ── Disclaimer + Footer ──
-    render_disclaimer()
-    render_footer()
+        col_cfg[f"{t} 分"] = st.colu
 
 
 if __name__ == "__main__":
