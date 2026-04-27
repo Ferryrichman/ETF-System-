@@ -1113,7 +1113,70 @@ def render_momentum_table(prices: pd.DataFrame):
                 f"{t} {m}M", width=72
             )
     for t in TICKERS:
-        col_cfg[f"{t} 分"] = st.colu
+        col_cfg[f"{t} 分"] = st.column_config.TextColumn(f"{t} 分", width=90)
+
+    st.dataframe(
+        df_disp,
+        use_container_width=True,
+        height=640,
+        hide_index=True,
+        column_config=col_cfg,
+    )
+
+
+# ══════════════════════════════════════════════════════════
+#  MAIN
+# ══════════════════════════════════════════════════════════
+def main():
+    inject_css()
+    render_header()
+
+    # ── Load Data ──
+    with st.spinner("正在獲取最新市場數據..."):
+        prices = load_prices()
+        prices = compute_signals(prices)
+
+    info   = get_current_info(prices)
+    stats  = calc_stats(prices)
+    annual = calc_annual(prices)
+
+    # ── Signal ──
+    render_signal_card(info)
+
+    # ── Scores ──
+    section_header("📊", "本月 ETF 動力分數比較")
+    st.markdown(
+        '<div style="background:#111827;border:1px solid #1e293b;border-radius:14px;padding:16px 16px 8px;">',
+        unsafe_allow_html=True,
+    )
+    if info:
+        render_scores_chart(info["scores"])
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # ── WhatsApp ──
+    section_header("📱", "WhatsApp 訊息 — 一鍵複製後轉發")
+    if info:
+        render_whatsapp_section(info, stats)
+
+    # ── Performance Tabs ──
+    section_header("📈", "歷史績效")
+    render_kpis(stats)
+
+    tab1, tab2, tab3 = st.tabs(["  年度回報  ", "  增長曲線  ", "  持倉記錄  "])
+    with tab1:
+        render_annual_chart(annual)
+    with tab2:
+        render_cumulative_chart(stats)
+    with tab3:
+        render_allocation_heatmap(prices)
+
+    # ── Momentum Calculation Detail ──
+    section_header("🔢", "動力計算明細")
+    render_momentum_table(prices)
+
+    # ── Disclaimer + Footer ──
+    render_disclaimer()
+    render_footer()
 
 
 if __name__ == "__main__":
