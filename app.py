@@ -140,27 +140,53 @@ def _get_daily_ohlc(t: str, start, end) -> pd.DataFrame:
     end_str   = end.strftime("%Y-%m-%d")
 
     def _extract(raw: pd.DataFrame) -> pd.DataFrame:
-        """Pull Open and Close from a raw yfinance DataFrame."""
+        """
+        Pull Adjusted Open + Raw Close from a yfinance auto_adjust=False DataFrame.
+
+        Price usage:
+          Close  → RAW (unadjusted) close  → momentum lookback (stable, no dividend drift)
+          Open   → ADJUSTED open           → buy/sell execution price (includes dividend value)
+
+        Adjusted Open = raw_open × (adj_close / raw_close)
+        If Adj Close is unavailable, falls back to raw open (ratio = 1.0).
+        """
+        def _squeeze(s):
+            return s.squeeze() if isinstance(s, pd.DataFrame) else s
+
         if isinstance(raw.columns, pd.MultiIndex):
-            # yf.download multi-ticker format
-            result = pd.DataFrame(index=raw.index)
-            for col in ("Open", "Close"):
-                lvl = raw[col]
-                result[col] = (lvl[t] if t in lvl.columns else lvl.iloc[:, 0])
+            def _col(name):
+                if name in raw.columns.get_level_values(0):
+                    lvl = raw[name]
+                    s = lvl[t] if t in lvl.columns else lvl.iloc[:, 0]
+                else:
+                    s = pd.Series(dtype=float, index=raw.index)
+                return _squeeze(s)
+            raw_o = _col("Open")
+            raw_c = _col("Close")
+            adj_c = _col("Adj Close")
         else:
-            result = pd.DataFrame(index=raw.index)
-            result["Open"]  = raw.get("Open",  raw.get("open",  pd.Series(dtype=float)))
-            result["Close"] = raw.get("Close", raw.get("Adj Close", pd.Series(dtype=float)))
-        # Squeeze any accidental DataFrame columns
-        for c in ("Open", "Close"):
-            if isinstance(result[c], pd.DataFrame):
-                result[c] = result[c].squeeze()
+            raw_o = _squeeze(raw.get("Open",      pd.Series(dtype=float, index=raw.index)))
+            raw_c = _squeeze(raw.get("Close",     pd.Series(dtype=float, index=raw.index)))
+            adj_c = _squeeze(raw.get("Adj Close", pd.Series(dtype=float, index=raw.index)))
+
+        # Adjustment ratio: adj_close / raw_close
+        # Falls back to 1.0 when Adj Close is missing or raw_close is zero
+        if not isinstance(adj_c, pd.Series) or adj_c.dropna().empty:
+            adj_ratio = pd.Series(1.0, index=raw.index)
+        else:
+            adj_ratio = (adj_c / raw_c.replace(0, np.nan))
+            adj_ratio = adj_ratio.replace([np.inf, -np.inf], np.nan).fillna(1.0)
+
+        result = pd.DataFrame(index=raw.index)
+        result["Open"]  = _squeeze(raw_o * adj_ratio)  # adjusted open  (for returns)
+        result["Close"] = raw_c                         # raw close      (for momentum)
         return result.sort_index()
 
     for attempt in range(4):
         try:
             tk  = yf.Ticker(t)
-            raw = tk.history(start=start_str, end=end_str, auto_adjust=True)
+            # auto_adjust=False → returns raw OHLC (unadjusted close)
+            raw = tk.history(start=start_str, end=end_str, auto_adjust=False)
             if not raw.empty and "Close" in raw.columns:
                 return _extract(raw)
         except Exception:
@@ -168,7 +194,7 @@ def _get_daily_ohlc(t: str, start, end) -> pd.DataFrame:
 
         try:
             raw = yf.download(t, start=start_str, end=end_str,
-                              progress=False, auto_adjust=True)
+                              progress=False, auto_adjust=False)
             if not raw.empty:
                 return _extract(raw)
         except Exception:
@@ -996,6 +1022,98 @@ def section_header(icon: str, title: str):
 
 
 # ══════════════════════════════════════════════════════════
+#  MOMENTUM CALCULATION TABLE
+# ══════════════════════════════════════════════════════════
+def render_momentum_table(prices: pd.DataFrame):
+    """
+    Show a detailed month-by-month momentum calculation table,
+    mirroring the Excel 'QRS Basic Signal' CSV structure.
+
+    Columns:
+      月份 | 持倉 | 月回報 | 訊號 | SPY/VEU/BIL 收市 |
+      3M/6M/9M/12M returns per ETF | Scores per ETF
+    """
+    st.markdown(
+        '<div style="font-size:12px;color:#64748b;line-height:1.8;margin-bottom:16px;">'
+        '動力計算：<b style="color:#94a3b8;">原始收市價</b>（Raw Close，同 Excel）｜'
+        '月回報：<b style="color:#94a3b8;">調整開市價</b>（Adj Open = Raw Open × Adj Close / Raw Close）<br>'
+        '「訊號」= 當月月底計算的下月持倉；「持倉」= 本月實際持有（上月訊號）。'
+        '最新月份在最上方。'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    held_s = prices["signal"].shift(1)   # what we actually held this month
+
+    rows = []
+    for dt in reversed(prices.index):
+        r = prices.loc[dt]
+        row: dict = {}
+
+        row["月份"] = dt.strftime("%Y-%m")
+
+        held = held_s.loc[dt]
+        row["持倉"] = str(held) if pd.notna(held) else "—"
+
+        ret = r["signal_return"]
+        row["月回報"] = f"{ret*100:+.2f}%" if pd.notna(ret) else "—"
+
+        sig = r["signal"]
+        row["訊號"] = str(sig) if pd.notna(sig) else "—"
+
+        # Raw close prices (used for momentum)
+        for t in TICKERS:
+            v = r[t]
+            row[f"{t} 收市"] = round(float(v), 2) if pd.notna(v) else None
+
+        # Lookback returns: display order matches Excel (12M → 9M → 6M → 3M)
+        for m in [12, 9, 6, 3]:
+            for t in TICKERS:
+                v = r.get(f"{t}_{m}m", np.nan)
+                row[f"{t} {m}M"] = f"{v*100:.2f}%" if pd.notna(v) else "—"
+
+        # Weighted scores
+        winner = str(sig) if pd.notna(sig) else None
+        for t in TICKERS:
+            v = r.get(f"score_{t}", np.nan)
+            mark = " ✓" if (t == winner and pd.notna(v)) else ""
+            row[f"{t} 分"] = (f"{v:.4f}{mark}" if pd.notna(v) else "—")
+
+        rows.append(row)
+
+    df_disp = pd.DataFrame(rows)
+
+    # ── Colour-highlight held/signal columns via cell_style ──
+    # Streamlit dataframe doesn't support per-cell colour easily;
+    # we use column_config for nicer headers and a fixed-height scrollable table.
+    col_cfg: dict = {
+        "月份":    st.column_config.TextColumn("月份",    width=80),
+        "持倉":    st.column_config.TextColumn("持倉",    width=60),
+        "月回報":  st.column_config.TextColumn("月回報",  width=80),
+        "訊號":    st.column_config.TextColumn("訊號",    width=60),
+    }
+    for t in TICKERS:
+        col_cfg[f"{t} 收市"] = st.column_config.NumberColumn(
+            f"{t} 收市", format="%.2f", width=72
+        )
+    for m in [12, 9, 6, 3]:
+        for t in TICKERS:
+            col_cfg[f"{t} {m}M"] = st.column_config.TextColumn(
+                f"{t} {m}M", width=72
+            )
+    for t in TICKERS:
+        col_cfg[f"{t} 分"] = st.column_config.TextColumn(f"{t} 分", width=90)
+
+    st.dataframe(
+        df_disp,
+        use_container_width=True,
+        height=640,
+        hide_index=True,
+        column_config=col_cfg,
+    )
+
+
+# ══════════════════════════════════════════════════════════
 #  MAIN
 # ══════════════════════════════════════════════════════════
 def main():
@@ -1040,6 +1158,10 @@ def main():
         render_cumulative_chart(stats)
     with tab3:
         render_allocation_heatmap(prices)
+
+    # ── Momentum Calculation Detail ──
+    section_header("🔢", "動力計算明細")
+    render_momentum_table(prices)
 
     # ── Disclaimer + Footer ──
     render_disclaimer()
