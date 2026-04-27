@@ -131,29 +131,26 @@ div[data-testid="stTextArea"] label { display: none; }
 # ══════════════════════════════════════════════════════════
 def _get_daily_ohlc(t: str, start, end) -> pd.DataFrame:
     """
-    Robustly fetch DAILY Open + Close prices for one ticker.
+    Fetch DAILY Adjusted Open + Adjusted Close for one ticker.
     Returns DataFrame with columns ['Open', 'Close'].
-    Tries Ticker.history first, falls back to yf.download.
-    Retries with exponential back-off on transient Yahoo Finance errors.
+
+    Price methodology — matches the Excel 'QRS Basic Signal' exactly:
+      Close  → Adj Close  → momentum lookback (consistent with Excel 'Price data (Adj Close)')
+      Open   → Adj Open   → buy/sell execution price (dividend-inclusive return)
+
+    Uses auto_adjust=True so Yahoo Finance returns all prices already adjusted.
+    Retries up to 4× with exponential back-off on transient errors.
     """
     start_str = start.strftime("%Y-%m-%d")
     end_str   = end.strftime("%Y-%m-%d")
 
     def _extract(raw: pd.DataFrame) -> pd.DataFrame:
-        """
-        Pull Adjusted Open + Raw Close from a yfinance auto_adjust=False DataFrame.
-
-        Price usage:
-          Close  → RAW (unadjusted) close  → momentum lookback (stable, no dividend drift)
-          Open   → ADJUSTED open           → buy/sell execution price (includes dividend value)
-
-        Adjusted Open = raw_open × (adj_close / raw_close)
-        If Adj Close is unavailable, falls back to raw open (ratio = 1.0).
-        """
+        """Pull adj Open + adj Close from a yf.download(auto_adjust=True) DataFrame."""
         def _squeeze(s):
             return s.squeeze() if isinstance(s, pd.DataFrame) else s
 
         if isinstance(raw.columns, pd.MultiIndex):
+            # yfinance ≥ 1.x returns MultiIndex even for a single ticker
             def _col(name):
                 if name in raw.columns.get_level_values(0):
                     lvl = raw[name]
@@ -161,36 +158,23 @@ def _get_daily_ohlc(t: str, start, end) -> pd.DataFrame:
                 else:
                     s = pd.Series(dtype=float, index=raw.index)
                 return _squeeze(s)
-            raw_o = _col("Open")
-            raw_c = _col("Close")
-            adj_c = _col("Adj Close")
+            adj_o = _col("Open")
+            adj_c = _col("Close")
         else:
-            raw_o = _squeeze(raw.get("Open",      pd.Series(dtype=float, index=raw.index)))
-            raw_c = _squeeze(raw.get("Close",     pd.Series(dtype=float, index=raw.index)))
-            adj_c = _squeeze(raw.get("Adj Close", pd.Series(dtype=float, index=raw.index)))
-
-        # Adjustment ratio: adj_close / raw_close
-        # Falls back to 1.0 when Adj Close is missing or raw_close is zero
-        if not isinstance(adj_c, pd.Series) or adj_c.dropna().empty:
-            adj_ratio = pd.Series(1.0, index=raw.index)
-        else:
-            adj_ratio = (adj_c / raw_c.replace(0, np.nan))
-            adj_ratio = adj_ratio.replace([np.inf, -np.inf], np.nan).fillna(1.0)
+            # yfinance 0.2.x returns flat columns for single ticker
+            adj_o = _squeeze(raw.get("Open",  pd.Series(dtype=float, index=raw.index)))
+            adj_c = _squeeze(raw.get("Close", pd.Series(dtype=float, index=raw.index)))
 
         result = pd.DataFrame(index=raw.index)
-        result["Open"]  = _squeeze(raw_o * adj_ratio)  # adjusted open  (for returns)
-        result["Close"] = raw_c                         # raw close      (for momentum)
+        result["Open"]  = adj_o   # adj open  → monthly return calculation
+        result["Close"] = adj_c   # adj close → momentum score calculation
         return result.sort_index()
 
-    # IMPORTANT: Only use yf.download(auto_adjust=False), NOT Ticker.history().
-    # Ticker.history() returns Adj Close in its "Close" column regardless of the
-    # auto_adjust flag in many yfinance versions — this silently corrupts momentum.
-    # yf.download(auto_adjust=False) reliably returns RAW close + Adj Close separately.
     for attempt in range(4):
         try:
             raw = yf.download(
                 t, start=start_str, end=end_str,
-                progress=False, auto_adjust=False, actions=False,
+                progress=False, auto_adjust=True,
             )
             if not raw.empty:
                 return _extract(raw)
@@ -1032,8 +1016,8 @@ def render_momentum_table(prices: pd.DataFrame):
     """
     st.markdown(
         '<div style="font-size:12px;color:#64748b;line-height:1.8;margin-bottom:16px;">'
-        '動力計算：<b style="color:#94a3b8;">原始收市價</b>（Raw Close，同 Excel）｜'
-        '月回報：<b style="color:#94a3b8;">調整開市價</b>（Adj Open = Raw Open × Adj Close / Raw Close）<br>'
+        '動力計算 &amp; 月回報：均使用 <b style="color:#94a3b8;">調整價（Adj Close / Adj Open）</b>，'
+        '與 Excel「Price data (Adj Close)」方法一致。<br>'
         '「訊號」= 當月月底計算的下月持倉；「持倉」= 本月實際持有（上月訊號）。'
         '最新月份在最上方。'
         '</div>',
@@ -1058,7 +1042,7 @@ def render_momentum_table(prices: pd.DataFrame):
         sig = r["signal"]
         row["訊號"] = str(sig) if pd.notna(sig) else "—"
 
-        # Raw close prices (used for momentum)
+        # Adj close prices (used for momentum — matches Excel)
         for t in TICKERS:
             v = r[t]
             row[f"{t} 收市"] = round(float(v), 2) if pd.notna(v) else None
