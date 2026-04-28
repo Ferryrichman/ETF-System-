@@ -11,12 +11,20 @@ import streamlit.components.v1 as components
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from dateutil.relativedelta import relativedelta
 import plotly.graph_objects as go
 import time
 import warnings
 warnings.filterwarnings("ignore")
+
+# Hong Kong timezone (UTC+8) — no external dependency
+_HK_TZ = timezone(timedelta(hours=8))
+
+def _hk_date_key() -> str:
+    """Return today's date string in HK time (resets at 00:00 HKT = 16:00 UTC prev day).
+    Used as cache key so data refreshes once per day before HK market open."""
+    return datetime.now(_HK_TZ).strftime("%Y-%m-%d")
 
 # ══════════════════════════════════════════════════════════
 #  PAGE CONFIG
@@ -33,6 +41,7 @@ st.set_page_config(
 # ══════════════════════════════════════════════════════════
 TICKERS = ["SPY", "VEU", "BIL"]
 WEIGHTS = {"3m": 0.8, "6m": 0.6, "9m": 0.4, "12m": 0.2}
+PERF_YEAR_START = 2009   # KPIs & annual chart start year (growth curve unchanged)
 ETF_INFO = {
     "SPY": {
         "name": "SPDR S&P 500 ETF Trust",
@@ -186,16 +195,19 @@ def _get_daily_ohlc(t: str, start, end) -> pd.DataFrame:
     return pd.DataFrame(columns=["Open", "Close"])
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def load_prices() -> pd.DataFrame:
+@st.cache_data(show_spinner=False)
+def load_prices(date_key: str = "") -> pd.DataFrame:
     """
     Download daily adj OHLC and compute two monthly series per ETF:
       {t}       – last trading day adj CLOSE  → momentum signal (matches Excel Adj Close)
       {t}_open  – first trading day adj OPEN  → actual buy / sell price
 
     Monthly return = adj_open(M+1) ÷ adj_open(M) − 1
+
+    Cache key = HK date string → refreshes once per day at 00:00 HKT.
+    To force a hard reset, bump _CACHE_VERSION below.
     """
-    _CACHE_VERSION = "adj_v6"   # ← bump this string to force a fresh download
+    _CACHE_VERSION = "adj_v7"   # ← bump this string to force a fresh download (ignores date_key)
     end   = datetime.today()
     start = end - relativedelta(years=22)
 
@@ -229,7 +241,7 @@ def load_prices() -> pd.DataFrame:
     return df
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(show_spinner=False)
 def compute_signals(df: pd.DataFrame) -> pd.DataFrame:
     """Calculate weighted momentum scores and monthly signals."""
     prices = df.copy()
@@ -322,18 +334,49 @@ def get_current_info(prices: pd.DataFrame) -> dict:
 
 
 def calc_stats(prices: pd.DataFrame) -> dict:
-    monthly  = prices["signal_return"].dropna()
+    monthly_all = prices["signal_return"].dropna()
+
+    # Full-history strategy cumulative series — used for the growth curve
+    cum_all = (1 + monthly_all).cumprod() * 10000
+
+    # SPY buy-and-hold cumulative series (same period, same $10k start)
+    # Uses first-trading-day open prices, identical methodology to strategy returns
+    spy_ret_all = (prices["SPY_open"].shift(-1) / prices["SPY_open"] - 1)
+    spy_ret_all = spy_ret_all.reindex(monthly_all.index)   # align to strategy months
+    spy_cum_all = (1 + spy_ret_all.fillna(0)).cumprod() * 10000
+
+    # KPI series filtered from PERF_YEAR_START (e.g. 2009) onward
+    monthly = monthly_all[monthly_all.index.year >= PERF_YEAR_START]
     cum      = (1 + monthly).cumprod()
     total    = float(cum.iloc[-1] - 1)
     n_yrs    = len(monthly) / 12
     cagr     = float((1 + total) ** (1 / n_yrs) - 1)
 
-    # MDD with start/end dates
+    # MDD with start/end dates (over KPI period)
     running_max = cum.cummax()
     drawdown    = (cum - running_max) / running_max
     mdd         = float(drawdown.min())
     mdd_end     = drawdown.idxmin()
     mdd_start   = cum[:mdd_end].idxmax()
+
+    # Sharpe ratio (annualised, risk-free = 0%)
+    # Formula: mean_monthly * sqrt(12) / std_monthly
+    m_std = float(monthly.std())
+    sharpe = float(monthly.mean() * np.sqrt(12) / m_std) if m_std > 0 else None
+
+    # Full-history drawdown series (for underwater chart, % values)
+    cum_all_norm    = (1 + monthly_all).cumprod()
+    dd_series_all   = (cum_all_norm - cum_all_norm.cummax()) / cum_all_norm.cummax() * 100
+
+    # Longest consecutive months underwater (KPI period)
+    max_dd_months = 0
+    cur_run = 0
+    for v in (drawdown < 0):
+        if v:
+            cur_run += 1
+            max_dd_months = max(max_dd_months, cur_run)
+        else:
+            cur_run = 0
 
     # Trailing 3-year and 5-year annualised returns
     def trailing_cagr(years: int):
@@ -359,7 +402,11 @@ def calc_stats(prices: pd.DataFrame) -> dict:
         "init_10k":        float(cum.iloc[-1] * 10000),
         "trades_yr":       changes / n_yrs,
         "monthly":         monthly,
-        "cumulative":      cum * 10000,
+        "cumulative":      cum_all,        # strategy full-history for growth curve
+        "spy_cumulative":  spy_cum_all,    # SPY buy-and-hold for comparison
+        "drawdown_series": dd_series_all,  # full-history % drawdown for underwater chart
+        "max_dd_months":   max_dd_months,  # longest consecutive months underwater (KPI period)
+        "sharpe":          sharpe,
         "cagr_3yr":        trailing_cagr(3),
         "cagr_5yr":        trailing_cagr(5),
     }
@@ -367,6 +414,7 @@ def calc_stats(prices: pd.DataFrame) -> dict:
 
 def calc_annual(prices: pd.DataFrame) -> dict:
     monthly = prices["signal_return"].dropna()
+    monthly = monthly[monthly.index.year >= PERF_YEAR_START]
     return {
         yr: float((1 + grp).prod() - 1)
         for yr, grp in monthly.groupby(monthly.index.year)
@@ -619,7 +667,7 @@ def render_whatsapp_section(info: dict, stats: dict):
         f"📅 執行時間：本月第一個交易日\n"
         f"⏰ 美股開市後任何時間均可執行\n"
         f"\n"
-        f"回測CAGR：{stats['cagr']*100:.1f}% {bt_period}  |  MDD：{stats['mdd']*100:.1f}% {mdd_period}\n"
+        f"回測CAGR：{stats['cagr']*100:.1f}% {bt_period}  |  MDD：{stats['mdd']*100:.1f}%\n"
         f"{yr3_line}\n"
         f"{yr5_line}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -723,7 +771,6 @@ function cp() {{
 
 
 def render_kpis(stats: dict):
-    c1, c2, c3, c4 = st.columns(4)
     kpi_style = """
         background:#111827;
         border:1px solid #1e293b;
@@ -731,39 +778,97 @@ def render_kpis(stats: dict):
         padding:16px 12px;
         text-align:center;
     """
+
+    # ── Row 1: Core KPIs ──
+    c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
         st.markdown(
             f'<div style="{kpi_style}">'
-            f'<div style="font-size:28px;font-weight:900;color:#4ade80;letter-spacing:-0.5px;">'
+            f'<div style="font-size:26px;font-weight:900;color:#4ade80;letter-spacing:-0.5px;">'
             f'{stats["cagr"]*100:.1f}%</div>'
-            f'<div style="font-size:12px;color:#475569;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:5px;">CAGR</div>'
+            f'<div style="font-size:11px;color:#475569;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:5px;">CAGR</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
     with c2:
         st.markdown(
             f'<div style="{kpi_style}">'
-            f'<div style="font-size:28px;font-weight:900;color:#f87171;letter-spacing:-0.5px;">'
+            f'<div style="font-size:26px;font-weight:900;color:#f87171;letter-spacing:-0.5px;">'
             f'{stats["mdd"]*100:.1f}%</div>'
-            f'<div style="font-size:12px;color:#475569;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:5px;">最大回撤</div>'
+            f'<div style="font-size:11px;color:#475569;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:5px;">最大回撤</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
+    mdd_mo = stats.get("max_dd_months", 0)
     with c3:
         st.markdown(
             f'<div style="{kpi_style}">'
-            f'<div style="font-size:28px;font-weight:900;color:#818cf8;letter-spacing:-0.5px;">'
-            f'${stats["init_10k"]:,.0f}</div>'
-            f'<div style="font-size:12px;color:#475569;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:5px;">$10k 增長至</div>'
+            f'<div style="font-size:26px;font-weight:900;color:#fb923c;letter-spacing:-0.5px;">'
+            f'{mdd_mo}</div>'
+            f'<div style="font-size:11px;color:#475569;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:5px;">最長回撤月數</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
     with c4:
         st.markdown(
             f'<div style="{kpi_style}">'
-            f'<div style="font-size:28px;font-weight:900;color:#fbbf24;letter-spacing:-0.5px;">'
+            f'<div style="font-size:26px;font-weight:900;color:#818cf8;letter-spacing:-0.5px;">'
+            f'${stats["init_10k"]:,.0f}</div>'
+            f'<div style="font-size:11px;color:#475569;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:5px;">$10k 增長至</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+    with c5:
+        st.markdown(
+            f'<div style="{kpi_style}">'
+            f'<div style="font-size:26px;font-weight:900;color:#fbbf24;letter-spacing:-0.5px;">'
             f'{stats["n_years"]:.1f}</div>'
-            f'<div style="font-size:12px;color:#475569;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:5px;">回測年數</div>'
+            f'<div style="font-size:11px;color:#475569;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:5px;">回測年數</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── Row 2: Risk-adjusted + trailing returns ──
+    st.markdown('<div style="margin-top:8px;"></div>', unsafe_allow_html=True)
+    r1, r2, r3 = st.columns(3)
+
+    sharpe = stats.get("sharpe")
+    sharpe_val = f"{sharpe:.2f}" if sharpe is not None else "—"
+    sharpe_clr = "#4ade80" if (sharpe is not None and sharpe >= 1.0) else \
+                 "#fbbf24" if (sharpe is not None and sharpe >= 0.5) else "#f87171"
+    with r1:
+        st.markdown(
+            f'<div style="{kpi_style}">'
+            f'<div style="font-size:28px;font-weight:900;color:{sharpe_clr};letter-spacing:-0.5px;">'
+            f'{sharpe_val}</div>'
+            f'<div style="font-size:12px;color:#475569;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:5px;">Sharpe Ratio</div>'
+            f'<div style="font-size:10px;color:#334155;margin-top:3px;">年化 · RF=0%</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    c3yr = stats.get("cagr_3yr")
+    c3yr_val = f"{c3yr*100:.1f}%" if c3yr is not None else "數據不足"
+    c3yr_clr = "#4ade80" if (c3yr is not None and c3yr >= 0) else "#f87171"
+    with r2:
+        st.markdown(
+            f'<div style="{kpi_style}">'
+            f'<div style="font-size:28px;font-weight:900;color:{c3yr_clr};letter-spacing:-0.5px;">'
+            f'{c3yr_val}</div>'
+            f'<div style="font-size:12px;color:#475569;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:5px;">3年年化回報</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    c5yr = stats.get("cagr_5yr")
+    c5yr_val = f"{c5yr*100:.1f}%" if c5yr is not None else "數據不足"
+    c5yr_clr = "#4ade80" if (c5yr is not None and c5yr >= 0) else "#f87171"
+    with r3:
+        st.markdown(
+            f'<div style="{kpi_style}">'
+            f'<div style="font-size:28px;font-weight:900;color:{c5yr_clr};letter-spacing:-0.5px;">'
+            f'{c5yr_val}</div>'
+            f'<div style="font-size:12px;color:#475569;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:5px;">5年年化回報</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -805,21 +910,63 @@ def render_annual_chart(annual: dict):
 
 
 def render_cumulative_chart(stats: dict):
-    cum = stats["cumulative"]
+    cum      = stats["cumulative"]
+    spy_cum  = stats.get("spy_cumulative")
+    mdd_s    = stats.get("mdd_start")
+    mdd_e    = stats.get("mdd_end")
+
     fig = go.Figure()
+
+    # Shade the MDD period (drawn first so it sits behind lines)
+    if mdd_s is not None and mdd_e is not None:
+        fig.add_vrect(
+            x0=mdd_s, x1=mdd_e,
+            fillcolor="rgba(248,113,113,0.08)",
+            layer="below",
+            line_width=0,
+            annotation_text="MDD",
+            annotation_position="top left",
+            annotation_font=dict(color="#f87171", size=10),
+        )
+
+    # SPY buy-and-hold baseline
+    if spy_cum is not None:
+        fig.add_trace(go.Scatter(
+            x=spy_cum.index,
+            y=spy_cum.values,
+            name="SPY 買入持有",
+            mode="lines",
+            line=dict(color="#475569", width=1.5, dash="dot"),
+            hovertemplate="%{x|%Y-%m}  SPY B&H: <b>$%{y:,.0f}</b><extra></extra>",
+        ))
+
+    # QRS strategy
     fig.add_trace(go.Scatter(
         x=cum.index,
         y=cum.values,
+        name="QRS 策略",
         mode="lines",
         line=dict(color="#818cf8", width=2.5),
         fill="tozeroy",
         fillcolor="rgba(129,140,248,0.07)",
-        hovertemplate="%{x|%Y-%m}<br><b>$%{y:,.0f}</b><extra></extra>",
+        hovertemplate="%{x|%Y-%m}  QRS: <b>$%{y:,.0f}</b><extra></extra>",
     ))
+
+    # MDD start/end markers
+    if mdd_s is not None and mdd_e is not None and mdd_s in cum.index and mdd_e in cum.index:
+        fig.add_trace(go.Scatter(
+            x=[mdd_s, mdd_e],
+            y=[cum[mdd_s], cum[mdd_e]],
+            mode="markers",
+            name="MDD 區間",
+            marker=dict(color="#f87171", size=8, symbol="circle"),
+            hovertemplate="%{x|%Y-%m}  <b>$%{y:,.0f}</b><extra>MDD</extra>",
+        ))
+
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        height=240,
+        height=280,
         margin=dict(l=0, r=0, t=10, b=0),
         xaxis=dict(showgrid=False, tickfont=dict(color="#64748b", size=10)),
         yaxis=dict(
@@ -828,6 +975,64 @@ def render_cumulative_chart(stats: dict):
             tickprefix="$", tickformat=",.0f",
         ),
         hovermode="x unified",
+        legend=dict(
+            orientation="h", x=0, y=1.08,
+            font=dict(color="#64748b", size=11),
+            bgcolor="rgba(0,0,0,0)",
+        ),
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    # ── Underwater (drawdown) chart directly below ──
+    render_drawdown_chart(stats)
+
+
+def render_drawdown_chart(stats: dict):
+    """Underwater chart: drawdown % over full history, red fill below zero."""
+    dd = stats.get("drawdown_series")
+    if dd is None or dd.empty:
+        return
+
+    mdd_val = stats.get("mdd", 0) * 100   # convert to % for reference line
+
+    fig = go.Figure()
+
+    # Red fill area
+    fig.add_trace(go.Scatter(
+        x=dd.index,
+        y=dd.values,
+        mode="lines",
+        fill="tozeroy",
+        line=dict(color="#f87171", width=1.2),
+        fillcolor="rgba(248,113,113,0.15)",
+        name="回撤深度",
+        hovertemplate="%{x|%Y-%m}  <b>%{y:.1f}%</b><extra></extra>",
+    ))
+
+    # Horizontal MDD reference line
+    fig.add_hline(
+        y=mdd_val,
+        line=dict(color="#f87171", width=1, dash="dot"),
+        annotation_text=f"MDD {mdd_val:.1f}%",
+        annotation_position="bottom right",
+        annotation_font=dict(color="#f87171", size=10),
+    )
+
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        height=150,
+        margin=dict(l=0, r=0, t=4, b=0),
+        xaxis=dict(showgrid=False, tickfont=dict(color="#64748b", size=10)),
+        yaxis=dict(
+            showgrid=True, gridcolor="#1e293b",
+            zeroline=True, zerolinecolor="#334155",
+            tickfont=dict(color="#64748b", size=9),
+            ticksuffix="%",
+            autorange="reversed",   # negative values grow downward
+        ),
+        hovermode="x unified",
+        showlegend=False,
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -957,19 +1162,15 @@ def render_disclaimer():
     margin-top: 28px;
 ">
     <div style="font-size:10px;color:#6366f1;font-weight:800;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:10px;">
-        ⚠️ 重要聲明 / Important Disclaimer
+        Important Disclaimer
     </div>
     <p style="font-size:11.5px;color:#475569;line-height:1.7;margin-bottom:8px;">
-        本頁面所顯示之 ETF 訊號及相關資訊，由 <strong style="color:#64748b;">FerryRichMan Limited</strong>
-        根據量化動力策略模型計算而來，僅供參考之用，<strong style="color:#64748b;">不構成任何投資建議、要約、邀請或招攬</strong>。
-        過往績效並不代表未來表現。所有投資均涉及風險，投資者可能損失部分或全部本金。
-        在作出任何投資決定前，請諮詢持牌財務顧問。
+        ETF signals displayed are generated by FerryRichMan Limited based on a quantitative momentum model,
+        for reference only and <strong style="color:#64748b;">do not constitute investment advice</strong>.
+        Past performance is not indicative of future results.
     </p>
     <p style="font-size:11px;color:#374151;line-height:1.7;">
-        The ETF signals displayed on this page are generated by FerryRichMan Limited based on a quantitative momentum
-        model, for reference only and <strong style="color:#4b5563;">do not constitute investment advice, an offer, or solicitation</strong>.
-        Past performance is not indicative of future results. All investments involve risk.
-        Please consult a licensed financial advisor before making any investment decisions.
+        All investments involve risk. Please consult a licensed financial advisor before making any investment decisions.
     </p>
 </div>
         """,
@@ -993,8 +1194,8 @@ def render_footer():
         margin-bottom:6px;
     ">FerryRichMan Limited</div>
     <div style="font-size:10px;color:#1e293b;">
-        © {year} FerryRichMan Limited · All Rights Reserved<br>
-        QRS Standard Signal System · Powered by Python &amp; Streamlit
+        &copy; {year} FerryRichMan Limited &middot; All Rights Reserved<br>
+        QRS Standard Signal System &middot; Powered by Python &amp; Streamlit
     </div>
 </div>
         """,
@@ -1002,9 +1203,9 @@ def render_footer():
     )
 
 
-# ══════════════════════════════════════════════════════════
+# ======================================================
 #  DIVIDER HELPER
-# ══════════════════════════════════════════════════════════
+# ======================================================
 def section_header(icon: str, title: str):
     st.markdown(
         f'<div style="font-size:14px;color:#94a3b8;font-weight:800;'
@@ -1017,93 +1218,59 @@ def section_header(icon: str, title: str):
 # ══════════════════════════════════════════════════════════
 #  MOMENTUM CALCULATION TABLE
 # ══════════════════════════════════════════════════════════
-def render_momentum_table(prices: pd.DataFrame):
-    """
-    Show a detailed month-by-month momentum calculation table,
-    mirroring the Excel 'QRS Basic Signal' CSV structure.
-
-    Columns:
-      月份 | 持倉 | 月回報 | 訊號 | SPY/VEU/BIL 收市 |
-      3M/6M/9M/12M returns per ETF | Scores per ETF
-    """
+def render_momentum_table(prices):
     st.markdown(
         '<div style="font-size:12px;color:#64748b;line-height:1.8;margin-bottom:16px;">'
-        '動力計算 &amp; 月回報：均使用 <b style="color:#94a3b8;">調整價（Adj Close / Adj Open）</b>，'
-        '與 Excel「Price data (Adj Close)」方法一致。<br>'
-        '「訊號」= 當月月底計算的下月持倉；「持倉」= 本月實際持有（上月訊號）。'
-        '最新月份在最上方。'
+        '\u52d5\u529b\u8a08\u7b97 &amp; \u6708\u56de\u5831\uff1a\u5747\u4f7f\u7528 <b style="color:#94a3b8;">\u8abf\u6574\u50f9\uff08Adj Close / Adj Open\uff09</b>\uff0c'
+        '\u8207 Excel\u300ePrice data (Adj Close)\u300f\u65b9\u6cd5\u4e00\u81f4\u3002<br>'
+        '\u300c\u8a0a\u865f\u300d= \u7576\u6708\u6708\u5e95\u8a08\u7b97\u7684\u4e0b\u6708\u6301\u5009\uff1b\u300c\u6301\u5009\u300d= \u672c\u6708\u5be6\u969b\u6301\u6709\uff08\u4e0a\u6708\u8a0a\u865f\uff09\u3002'
+        '\u6700\u65b0\u6708\u4efd\u5728\u6700\u4e0a\u65b9\u3002'
         '</div>',
         unsafe_allow_html=True,
     )
 
-    held_s = prices["signal"].shift(1)   # what we actually held this month
+    held_s = prices["signal"].shift(1)
 
     rows = []
     for dt in reversed(prices.index):
         r = prices.loc[dt]
-        row: dict = {}
-
-        row["月份"] = dt.strftime("%Y-%m")
-
+        row = {}
+        row["\u6708\u4efd"] = dt.strftime("%Y-%m")
         held = held_s.loc[dt]
-        row["持倉"] = str(held) if pd.notna(held) else "—"
-
+        row["\u6301\u5009"] = str(held) if pd.notna(held) else "\u2014"
         ret = r["signal_return"]
-        row["月回報"] = f"{ret*100:+.2f}%" if pd.notna(ret) else "—"
-
+        row["\u6708\u56de\u5831"] = f"{ret*100:+.2f}%" if pd.notna(ret) else "\u2014"
         sig = r["signal"]
-        row["訊號"] = str(sig) if pd.notna(sig) else "—"
-
-        # Adj close prices (used for momentum — matches Excel)
+        row["\u8a0a\u865f"] = str(sig) if pd.notna(sig) else "\u2014"
         for t in TICKERS:
             v = r[t]
-            row[f"{t} 收市"] = round(float(v), 2) if pd.notna(v) else None
-
-        # Lookback returns: display order matches Excel (12M → 9M → 6M → 3M)
+            row[f"{t} \u6536\u5e02"] = round(float(v), 2) if pd.notna(v) else None
         for m in [12, 9, 6, 3]:
             for t in TICKERS:
-                v = r.get(f"{t}_{m}m", np.nan)
-                row[f"{t} {m}M"] = f"{v*100:.2f}%" if pd.notna(v) else "—"
-
-        # Weighted scores
+                v = r.get(f"{t}_{m}m", float("nan"))
+                row[f"{t} {m}M"] = f"{v*100:.2f}%" if pd.notna(v) else "\u2014"
         winner = str(sig) if pd.notna(sig) else None
         for t in TICKERS:
-            v = r.get(f"score_{t}", np.nan)
-            mark = " ✓" if (t == winner and pd.notna(v)) else ""
-            row[f"{t} 分"] = (f"{v:.4f}{mark}" if pd.notna(v) else "—")
-
+            v = r.get(f"score_{t}", float("nan"))
+            mark = " \u2713" if (t == winner and pd.notna(v)) else ""
+            row[f"{t} \u5206"] = (f"{v:.4f}{mark}" if pd.notna(v) else "\u2014")
         rows.append(row)
 
     df_disp = pd.DataFrame(rows)
-
-    # ── Colour-highlight held/signal columns via cell_style ──
-    # Streamlit dataframe doesn't support per-cell colour easily;
-    # we use column_config for nicer headers and a fixed-height scrollable table.
-    col_cfg: dict = {
-        "月份":    st.column_config.TextColumn("月份",    width=80),
-        "持倉":    st.column_config.TextColumn("持倉",    width=60),
-        "月回報":  st.column_config.TextColumn("月回報",  width=80),
-        "訊號":    st.column_config.TextColumn("訊號",    width=60),
+    col_cfg = {
+        "\u6708\u4efd": st.column_config.TextColumn("\u6708\u4efd", width=80),
+        "\u6301\u5009": st.column_config.TextColumn("\u6301\u5009", width=60),
+        "\u6708\u56de\u5831": st.column_config.TextColumn("\u6708\u56de\u5831", width=80),
+        "\u8a0a\u865f": st.column_config.TextColumn("\u8a0a\u865f", width=60),
     }
     for t in TICKERS:
-        col_cfg[f"{t} 收市"] = st.column_config.NumberColumn(
-            f"{t} 收市", format="%.2f", width=72
-        )
+        col_cfg[f"{t} \u6536\u5e02"] = st.column_config.NumberColumn(f"{t} \u6536\u5e02", format="%.2f", width=72)
     for m in [12, 9, 6, 3]:
         for t in TICKERS:
-            col_cfg[f"{t} {m}M"] = st.column_config.TextColumn(
-                f"{t} {m}M", width=72
-            )
+            col_cfg[f"{t} {m}M"] = st.column_config.TextColumn(f"{t} {m}M", width=72)
     for t in TICKERS:
-        col_cfg[f"{t} 分"] = st.column_config.TextColumn(f"{t} 分", width=90)
-
-    st.dataframe(
-        df_disp,
-        use_container_width=True,
-        height=640,
-        hide_index=True,
-        column_config=col_cfg,
-    )
+        col_cfg[f"{t} \u5206"] = st.column_config.TextColumn(f"{t} \u5206", width=90)
+    st.dataframe(df_disp, use_container_width=True, height=640, hide_index=True, column_config=col_cfg)
 
 
 # ══════════════════════════════════════════════════════════
@@ -1113,20 +1280,17 @@ def main():
     inject_css()
     render_header()
 
-    # ── Load Data ──
-    with st.spinner("正在獲取最新市場數據..."):
-        prices = load_prices()
+    with st.spinner("\u6b63\u5728\u7372\u53d6\u6700\u65b0\u5e02\u5834\u6578\u64da..."):
+        prices = load_prices(date_key=_hk_date_key())
         prices = compute_signals(prices)
 
     info   = get_current_info(prices)
     stats  = calc_stats(prices)
     annual = calc_annual(prices)
 
-    # ── Signal ──
     render_signal_card(info)
 
-    # ── Scores ──
-    section_header("📊", "本月 ETF 動力分數比較")
+    section_header("\U0001f4ca", "\u672c\u6708 ETF \u52d5\u529b\u5206\u6578\u6bd4\u8f03")
     st.markdown(
         '<div style="background:#111827;border:1px solid #1e293b;border-radius:14px;padding:16px 16px 8px;">',
         unsafe_allow_html=True,
@@ -1135,16 +1299,14 @@ def main():
         render_scores_chart(info["scores"])
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # ── WhatsApp ──
-    section_header("📱", "WhatsApp 訊息 — 一鍵複製後轉發")
+    section_header("\U0001f4f1", "WhatsApp \u8a0a\u606f \u2014 \u4e00\u9375\u8907\u88fd\u5f8c\u8f49\u767c")
     if info:
         render_whatsapp_section(info, stats)
 
-    # ── Performance Tabs ──
-    section_header("📈", "歷史績效")
+    section_header("\U0001f4c8", "\u6b77\u53f2\u7e3e\u6548")
     render_kpis(stats)
 
-    tab1, tab2, tab3 = st.tabs(["  年度回報  ", "  增長曲線  ", "  持倉記錄  "])
+    tab1, tab2, tab3 = st.tabs(["  \u5e74\u5ea6\u56de\u5831  ", "  \u589e\u9577\u66f2\u7dda  ", "  \u6301\u5009\u8a18\u9304  "])
     with tab1:
         render_annual_chart(annual)
     with tab2:
@@ -1152,11 +1314,9 @@ def main():
     with tab3:
         render_allocation_heatmap(prices)
 
-    # ── Momentum Calculation Detail ──
-    section_header("🔢", "動力計算明細")
+    section_header("\U0001f522", "\u52d5\u529b\u8a08\u7b97\u660e\u7d30")
     render_momentum_table(prices)
 
-    # ── Disclaimer + Footer ──
     render_disclaimer()
     render_footer()
 
