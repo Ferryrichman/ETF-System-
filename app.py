@@ -1299,7 +1299,7 @@ def main():
         render_scores_chart(info["scores"])
     st.markdown("</div>", unsafe_allow_html=True)
 
-    section_header("\U0001f4f1", "WhatsApp \u8a0a\u606f \u2014 \u4e00\u9375\u8907\u88fd\u5f8c\u8f49\u767c")
+    section_header("\U0001f4f1", "WhatsApp \u8a0a\u606f \u2014 \u4e00\u9375\u8907\u88fd\u5f8c\u8f49\u767b")
     if info:
         render_whatsapp_section(info, stats)
 
