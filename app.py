@@ -640,7 +640,7 @@ def render_whatsapp_section(info: dict, stats: dict):
     # ── Build CAGR / MDD line ──
     mdd_start_str = stats["mdd_start"].strftime("%Y-%m") if stats.get("mdd_start") is not None else "—"
     mdd_end_str   = stats["mdd_end"].strftime("%Y-%m")   if stats.get("mdd_end")   is not None else "—"
-    mdd_period    = f"（{mdd_start_str}}{mdd_end_str}）"
+    mdd_period    = f"（{mdd_start_str}~{mdd_end_str}）"
 
     c3 = stats.get("cagr_3yr")
     c5 = stats.get("cagr_5yr")
