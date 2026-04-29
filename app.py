@@ -1271,7 +1271,7 @@ def main():
         page_title="QRS Signal · FerryRichMan Limited",
         page_icon="📊",
         layout="centered",
-        initial_sidebar_state="collapsed",
+        initial_sidebar_state="expanded",
     )
     inject_css()
     render_header()
