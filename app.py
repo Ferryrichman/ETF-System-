@@ -27,16 +27,6 @@ def _hk_date_key() -> str:
     return datetime.now(_HK_TZ).strftime("%Y-%m-%d")
 
 # ══════════════════════════════════════════════════════════
-#  PAGE CONFIG
-# ══════════════════════════════════════════════════════════
-st.set_page_config(
-    page_title="QRS Signal · FerryRichMan Limited",
-    page_icon="📊",
-    layout="centered",
-    initial_sidebar_state="collapsed",
-)
-
-# ══════════════════════════════════════════════════════════
 #  CONSTANTS
 # ══════════════════════════════════════════════════════════
 TICKERS = ["SPY", "VEU", "BIL"]
@@ -650,7 +640,7 @@ def render_whatsapp_section(info: dict, stats: dict):
     # ── Build CAGR / MDD line ──
     mdd_start_str = stats["mdd_start"].strftime("%Y-%m") if stats.get("mdd_start") is not None else "—"
     mdd_end_str   = stats["mdd_end"].strftime("%Y-%m")   if stats.get("mdd_end")   is not None else "—"
-    mdd_period    = f"（{mdd_start_str}~{mdd_end_str}）"
+    mdd_period    = f"（{mdd_start_str}}{mdd_end_str}）"
 
     c3 = stats.get("cagr_3yr")
     c5 = stats.get("cagr_5yr")
@@ -1244,7 +1234,7 @@ def render_momentum_table(prices):
         row["\u8a0a\u865f"] = str(sig) if pd.notna(sig) else "\u2014"
         for t in TICKERS:
             v = r[t]
-            row[f"{t} \u6536\u5e02"] = round(float(v), 2) if pd.notna(v) else None
+            row[f"{t} \u6536\u5e07"] = round(float(v), 2) if pd.notna(v) else None
         for m in [12, 9, 6, 3]:
             for t in TICKERS:
                 v = r.get(f"{t}_{m}m", float("nan"))
@@ -1264,7 +1254,7 @@ def render_momentum_table(prices):
         "\u8a0a\u865f": st.column_config.TextColumn("\u8a0a\u865f", width=60),
     }
     for t in TICKERS:
-        col_cfg[f"{t} \u6536\u5e02"] = st.column_config.NumberColumn(f"{t} \u6536\u5e02", format="%.2f", width=72)
+        col_cfg[f"{t} \u6536\u5e07"] = st.column_config.NumberColumn(f"{t} \u6536\u5e07", format="%.2f", width=72)
     for m in [12, 9, 6, 3]:
         for t in TICKERS:
             col_cfg[f"{t} {m}M"] = st.column_config.TextColumn(f"{t} {m}M", width=72)
@@ -1277,6 +1267,12 @@ def render_momentum_table(prices):
 #  MAIN
 # ══════════════════════════════════════════════════════════
 def main():
+    st.set_page_config(
+        page_title="QRS Signal · FerryRichMan Limited",
+        page_icon="📊",
+        layout="centered",
+        initial_sidebar_state="collapsed",
+    )
     inject_css()
     render_header()
 
@@ -1299,7 +1295,7 @@ def main():
         render_scores_chart(info["scores"])
     st.markdown("</div>", unsafe_allow_html=True)
 
-    section_header("\U0001f4f1", "WhatsApp \u8a0a\u606f \u2014 \u4e00\u9375\u8907\u88fd\u5f8c\u8f49\u767b")
+    section_header("\U0001f4f1", "WhatsApp \u8a0a\u606f \u2014 \u4e00\u9375\u8907\u88fd\u5f8c\u8f49\u767c")
     if info:
         render_whatsapp_section(info, stats)
 
