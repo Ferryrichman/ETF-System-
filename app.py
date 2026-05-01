@@ -490,7 +490,7 @@ def render_signal_card(info: dict):
     name = ETF_INFO[sig]["name"]
     cls  = ETF_INFO[sig]["class_cn"]
 
-    month_str = f"{now.year}絴{MONTH_CN[now.month-1]}月"
+    month_str = f"{now.year}年{MONTH_CN[now.month-1]}月"
     data_str  = data_dt.strftime("%Y-%m-%d")
 
     # Change badge
@@ -673,7 +673,7 @@ def render_whatsapp_section(info: dict, stats: dict):
         f"{change_line}\n"
         f"📈 上月策略回報：{ret_str}\n"
         f"\n"
-        f"📅 執行時間：本月第$��個交易日\n"
+        f"📅 執行時間：本月第一個交易日\n"
         f"⏰ 美股開市後任何時間均可執行\n"
         f"\n"
         f"回測CAGR：{stats['cagr']*100:.1f}% {bt_period}  |  MDD：{stats['mdd']*100:.1f}%\n"
