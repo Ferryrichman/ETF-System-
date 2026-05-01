@@ -30,7 +30,7 @@ def _hk_date_key() -> str:
 #  CONSTANTS
 # ══════════════════════════════════════════════════════════
 TICKERS = ["SPY", "VEU", "BIL"]
-WEIGHTS = {"3m": 0.8, "6m": 0.6, "9m": 0.4, "12m": 0.2}
+WEIGHTS = {"3m": 0.8, "6m": 0.0, "9m": 0.0, "12m": 0.2}
 PERF_YEAR_START = 2009   # KPIs & annual chart start year (growth curve unchanged)
 ETF_INFO = {
     "SPY": {
