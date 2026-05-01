@@ -293,12 +293,31 @@ def compute_signals(df: pd.DataFrame) -> pd.DataFrame:
         holding_ret = prices[f"{t}_open"].shift(-1) / prices[f"{t}_open"] - 1
         prices.loc[mask, "signal_return"] = holding_ret[mask]
 
+    # ── Absolute Momentum Guard (AM Guard) ───────────────────────────────────
+    # After relative momentum picks the winner, check its 12M absolute return.
+    # If the winner's own 12M return < 0 (i.e. the asset itself is in a downtrend)
+    # → override to BIL regardless.  BIL is never overridden (cash is always safe).
+    prices["signal_am"] = prices["signal"].copy()
+    for t in TICKERS:
+        if t == "BIL":
+            continue
+        neg_abs = prices[f"{t}_12m"] < 0
+        override = (prices["signal_am"] == t) & neg_abs
+        prices.loc[override, "signal_am"] = "BIL"
+
+    prev_am = prices["signal_am"].shift(1)
+    prices["signal_return_am"] = np.nan
+    for t in TICKERS:
+        mask        = prev_am == t
+        holding_ret = prices[f"{t}_open"].shift(-1) / prices[f"{t}_open"] - 1
+        prices.loc[mask, "signal_return_am"] = holding_ret[mask]
+
     return prices
 
 
 def get_current_info(prices: pd.DataFrame) -> dict:
     """Extract current month signal, previous signal, last month return, scores."""
-    now = datetime.today()
+    now = datetime.now(_HK_TZ)          # ← use HK time, not server UTC
     completed = prices[prices.index.month != now.month]
     if len(completed) < 2:
         return {}
@@ -471,7 +490,7 @@ def render_signal_card(info: dict):
     name = ETF_INFO[sig]["name"]
     cls  = ETF_INFO[sig]["class_cn"]
 
-    month_str = f"{now.year}年{MONTH_CN[now.month-1]}月"
+    month_str = f"{now.year}絴{MONTH_CN[now.month-1]}月"
     data_str  = data_dt.strftime("%Y-%m-%d")
 
     # Change badge
@@ -654,7 +673,7 @@ def render_whatsapp_section(info: dict, stats: dict):
         f"{change_line}\n"
         f"📈 上月策略回報：{ret_str}\n"
         f"\n"
-        f"📅 執行時間：本月第一個交易日\n"
+        f"📅 執行時間：本月第$��個交易日\n"
         f"⏰ 美股開市後任何時間均可執行\n"
         f"\n"
         f"回測CAGR：{stats['cagr']*100:.1f}% {bt_period}  |  MDD：{stats['mdd']*100:.1f}%\n"
@@ -1234,7 +1253,7 @@ def render_momentum_table(prices):
         row["\u8a0a\u865f"] = str(sig) if pd.notna(sig) else "\u2014"
         for t in TICKERS:
             v = r[t]
-            row[f"{t} \u6536\u5e07"] = round(float(v), 2) if pd.notna(v) else None
+            row[f"{t} \u6536\u5e02"] = round(float(v), 2) if pd.notna(v) else None
         for m in [12, 9, 6, 3]:
             for t in TICKERS:
                 v = r.get(f"{t}_{m}m", float("nan"))
@@ -1254,7 +1273,7 @@ def render_momentum_table(prices):
         "\u8a0a\u865f": st.column_config.TextColumn("\u8a0a\u865f", width=60),
     }
     for t in TICKERS:
-        col_cfg[f"{t} \u6536\u5e07"] = st.column_config.NumberColumn(f"{t} \u6536\u5e07", format="%.2f", width=72)
+        col_cfg[f"{t} \u6536\u5e02"] = st.column_config.NumberColumn(f"{t} \u6536\u5e02", format="%.2f", width=72)
     for m in [12, 9, 6, 3]:
         for t in TICKERS:
             col_cfg[f"{t} {m}M"] = st.column_config.TextColumn(f"{t} {m}M", width=72)
@@ -1287,35 +1306,4 @@ def main():
     render_signal_card(info)
 
     section_header("\U0001f4ca", "\u672c\u6708 ETF \u52d5\u529b\u5206\u6578\u6bd4\u8f03")
-    st.markdown(
-        '<div style="background:#111827;border:1px solid #1e293b;border-radius:14px;padding:16px 16px 8px;">',
-        unsafe_allow_html=True,
-    )
-    if info:
-        render_scores_chart(info["scores"])
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    section_header("\U0001f4f1", "WhatsApp \u8a0a\u606f \u2014 \u4e00\u9375\u8907\u88fd\u5f8c\u8f49\u767c")
-    if info:
-        render_whatsapp_section(info, stats)
-
-    section_header("\U0001f4c8", "\u6b77\u53f2\u7e3e\u6548")
-    render_kpis(stats)
-
-    tab1, tab2, tab3 = st.tabs(["  \u5e74\u5ea6\u56de\u5831  ", "  \u589e\u9577\u66f2\u7dda  ", "  \u6301\u5009\u8a18\u9304  "])
-    with tab1:
-        render_annual_chart(annual)
-    with tab2:
-        render_cumulative_chart(stats)
-    with tab3:
-        render_allocation_heatmap(prices)
-
-    section_header("\U0001f522", "\u52d5\u529b\u8a08\u7b97\u660e\u7d30")
-    render_momentum_table(prices)
-
-    render_disclaimer()
-    render_footer()
-
-
-if __name__ == "__main__":
-    main()
+    st.markdow
