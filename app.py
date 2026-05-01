@@ -1306,4 +1306,35 @@ def main():
     render_signal_card(info)
 
     section_header("\U0001f4ca", "\u672c\u6708 ETF \u52d5\u529b\u5206\u6578\u6bd4\u8f03")
-    st.markdow
+    st.markdown(
+        '<div style="background:#111827;border:1px solid #1e293b;border-radius:14px;padding:16px 16px 8px;">',
+        unsafe_allow_html=True,
+    )
+    if info:
+        render_scores_chart(info["scores"])
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    section_header("📱", "WhatsApp 訊息 — 一鍵複製後轉發")
+    if info:
+        render_whatsapp_section(info, stats)
+
+    section_header("📈", "歷史績效")
+    render_kpis(stats)
+
+    tab1, tab2, tab3 = st.tabs(["  年度回報  ", "  增長曲線  ", "  持倉記錄  "])
+    with tab1:
+        render_annual_chart(annual)
+    with tab2:
+        render_cumulative_chart(stats)
+    with tab3:
+        render_allocation_heatmap(prices)
+
+    section_header("🔢", "動力計算明細")
+    render_momentum_table(prices)
+
+    render_disclaimer()
+    render_footer()
+
+
+if __name__ == "__main__":
+    main()
