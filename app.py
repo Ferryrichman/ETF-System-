@@ -197,8 +197,8 @@ def load_prices(date_key: str = "") -> pd.DataFrame:
     Cache key = HK date string → refreshes once per day at 00:00 HKT.
     To force a hard reset, bump _CACHE_VERSION below.
     """
-    _CACHE_VERSION = "adj_v7"   # ← bump this string to force a fresh download (ignores date_key)
-    end   = datetime.today()
+    _CACHE_VERSION = "adj_v8"   # ← bump this string to force a fresh download (ignores date_key)
+    end   = datetime.now(_HK_TZ) + timedelta(days=2)
     start = end - relativedelta(years=22)
 
     close_frames = {}   # month-end close  (signal)
