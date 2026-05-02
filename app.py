@@ -22,9 +22,15 @@ warnings.filterwarnings("ignore")
 _HK_TZ = timezone(timedelta(hours=8))
 
 def _hk_date_key() -> str:
-    """Return today's date string in HK time (resets at 00:00 HKT = 16:00 UTC prev day).
-    Used as cache key so data refreshes once per day before HK market open."""
-    return datetime.now(_HK_TZ).strftime("%Y-%m-%d")
+    """Cache key — invalidates at HKT 07:00 each day, NOT midnight.
+
+    Why: US market closes at 16:00 ET = HKT 04:00 (EDT) or 05:00 (EST), and
+    yfinance needs ~30-90 min to ingest the final daily candle. If we invalidate
+    at midnight HKT we re-fetch BEFORE the prior US session is even closed, miss
+    the last day, and the previous month's return shows as N/A all day.
+    Shifting the day boundary to HKT 07:00 (= 7-hour offset) ensures every fresh
+    fetch sees the completed prior US session, year-round (covers both EDT/EST)."""
+    return (datetime.now(_HK_TZ) - timedelta(hours=7)).strftime("%Y-%m-%d")
 
 # ══════════════════════════════════════════════════════════
 #  CONSTANTS
@@ -196,10 +202,10 @@ def load_prices(date_key: str = "") -> pd.DataFrame:
 
     Monthly return = adj_open(M+1) ÷ adj_open(M) − 1
 
-    Cache key = HK date string → refreshes once per day at 00:00 HKT.
+    Cache key = HK date string (rolled at HKT 06:00, after US close).
     To force a hard reset, bump _CACHE_VERSION below.
     """
-    _CACHE_VERSION = "adj_v7"   # ← bump this string to force a fresh download (ignores date_key)
+    _CACHE_VERSION = "adj_v8"   # ← bump this string to force a fresh download (ignores date_key)
     end   = datetime.today()
     start = end - relativedelta(years=22)
 
@@ -376,6 +382,28 @@ def calc_stats(prices: pd.DataFrame) -> dict:
     cum_all_norm    = (1 + monthly_all).cumprod()
     dd_series_all   = (cum_all_norm - cum_all_norm.cummax()) / cum_all_norm.cummax() * 100
 
+    # Anchor charts at Jan 1 of PERF_YEAR_START so the X-axis visually starts there.
+    # The first valid signal_return is delayed by the 12M lookback (BIL inception 2007-05
+    # → first usable signal May 2008 → first return June 2008). For the months before
+    # the first signal, prepend monthly $10k points so the curve stays FLAT at $10k from
+    # Jan 1 until the first real return arrives (instead of a misleading sloped line).
+    anchor_start = pd.Timestamp(f"{PERF_YEAR_START}-01-01")
+
+    def _anchor(series, baseline):
+        if len(series) == 0 or anchor_start >= series.index[0]:
+            return series
+        # Generate monthly anchor points from Jan 1 up to (but not including) the first real point
+        first_real = series.index[0]
+        anchor_dates = pd.date_range(start=anchor_start, end=first_real, freq="ME", inclusive="left")
+        # Always include Jan 1 itself
+        all_anchor = pd.DatetimeIndex([anchor_start]).append(anchor_dates).unique().sort_values()
+        anchor_series = pd.Series([baseline] * len(all_anchor), index=all_anchor)
+        return pd.concat([anchor_series, series]).sort_index()
+
+    cum_all = _anchor(cum_all, 10000.0)
+    spy_cum_all = _anchor(spy_cum_all, 10000.0)
+    dd_series_all = _anchor(dd_series_all, 0.0)
+
     # Longest consecutive months underwater (KPI period)
     max_dd_months = 0
     cur_run = 0
@@ -386,7 +414,7 @@ def calc_stats(prices: pd.DataFrame) -> dict:
         else:
             cur_run = 0
 
-    # Trailing 3-year and 5-year annualised returns
+    # Trailing 3-year, 5-year, 10-year annualised returns
     def trailing_cagr(years: int):
         cutoff = monthly.index[-1] - relativedelta(years=years)
         sub = monthly[monthly.index > cutoff]
@@ -417,6 +445,7 @@ def calc_stats(prices: pd.DataFrame) -> dict:
         "sharpe":          sharpe,
         "cagr_3yr":        trailing_cagr(3),
         "cagr_5yr":        trailing_cagr(5),
+        "cagr_10yr":       trailing_cagr(10),
     }
 
 
@@ -660,10 +689,12 @@ def render_whatsapp_section(info: dict, stats: dict):
     mdd_end_str   = stats["mdd_end"].strftime("%Y-%m")   if stats.get("mdd_end")   is not None else "—"
     mdd_period    = f"（{mdd_start_str}~{mdd_end_str}）"
 
-    c3 = stats.get("cagr_3yr")
-    c5 = stats.get("cagr_5yr")
-    yr3_line = f"3年年化回報：{c3*100:.1f}%" if c3 is not None else "3年年化回報：數據不足"
-    yr5_line = f"5年年化回報：{c5*100:.1f}%" if c5 is not None else "5年年化回報：數據不足"
+    c3  = stats.get("cagr_3yr")
+    c5  = stats.get("cagr_5yr")
+    c10 = stats.get("cagr_10yr")
+    yr3_line  = f"3年年化回報：{c3*100:.1f}%"   if c3  is not None else "3年年化回報：數據不足"
+    yr5_line  = f"5年年化回報：{c5*100:.1f}%"   if c5  is not None else "5年年化回報：數據不足"
+    yr10_line = f"10年年化回報：{c10*100:.1f}%" if c10 is not None else "10年年化回報：數據不足"
 
     msg = (
         f"📊【FRM Standard Signal】{month_str}\n"
@@ -678,6 +709,7 @@ def render_whatsapp_section(info: dict, stats: dict):
         f"回測CAGR：{stats['cagr']*100:.1f}% {bt_period}  |  MDD：{stats['mdd']*100:.1f}%\n"
         f"{yr3_line}\n"
         f"{yr5_line}\n"
+        f"{yr10_line}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"@FRM Standard · FerryRichMan Limited\n"
         f"（不構成任何投資建議）"
@@ -836,9 +868,9 @@ def render_kpis(stats: dict):
             unsafe_allow_html=True,
         )
 
-    # ── Row 2: Risk-adjusted + trailing returns ──
+    # ── Row 2: Risk-adjusted + trailing returns (3yr / 5yr / 10yr) ──
     st.markdown('<div style="margin-top:8px;"></div>', unsafe_allow_html=True)
-    r1, r2, r3 = st.columns(3)
+    r1, r2, r3, r4 = st.columns(4)
 
     sharpe = stats.get("sharpe")
     sharpe_val = f"{sharpe:.2f}" if sharpe is not None else "—"
@@ -877,6 +909,19 @@ def render_kpis(stats: dict):
             f'<div style="font-size:28px;font-weight:900;color:{c5yr_clr};letter-spacing:-0.5px;">'
             f'{c5yr_val}</div>'
             f'<div style="font-size:12px;color:#475569;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:5px;">5年年化回報</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    c10yr = stats.get("cagr_10yr")
+    c10yr_val = f"{c10yr*100:.1f}%" if c10yr is not None else "數據不足"
+    c10yr_clr = "#4ade80" if (c10yr is not None and c10yr >= 0) else "#f87171"
+    with r4:
+        st.markdown(
+            f'<div style="{kpi_style}">'
+            f'<div style="font-size:28px;font-weight:900;color:{c10yr_clr};letter-spacing:-0.5px;">'
+            f'{c10yr_val}</div>'
+            f'<div style="font-size:12px;color:#475569;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:5px;">10年年化回報</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -1064,6 +1109,20 @@ def render_allocation_heatmap(prices: pd.DataFrame):
             etf_map[(y, m)] = str(e)
         if pd.notna(r):
             ret_map[(y, m)] = float(r)
+
+    # Backfill PERF_YEAR_START Jan onward with BIL @ 0% for the months before the
+    # first valid signal (12M lookback constraint pushes first signal to mid-year).
+    # Realistically, you'd be sitting in cash waiting for the first signal, so
+    # showing those cells as BIL/0% is more honest than leaving them blank.
+    if etf_map:
+        first_y, first_m = min(etf_map.keys())
+        y, m = PERF_YEAR_START, 1
+        while (y, m) < (first_y, first_m):
+            etf_map.setdefault((y, m), "BIL")
+            ret_map.setdefault((y, m), 0.0)
+            m += 1
+            if m > 12:
+                m, y = 1, y + 1
 
     # Annual returns per year
     annual_ret: dict = {}
