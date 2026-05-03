@@ -17,6 +17,7 @@ import plotly.graph_objects as go
 import time
 import warnings
 warnings.filterwarnings("ignore")
+from academic_validation_ui import render_academic_validation
 
 # Hong Kong timezone (UTC+8) — no external dependency
 _HK_TZ = timezone(timedelta(hours=8))
@@ -1389,6 +1390,10 @@ def main():
 
     section_header("🔢", "動力計算明細")
     render_momentum_table(prices)
+
+    # Academic-grade validation — 8 statistical tests
+    section_header("🎓", "學術級驗證 · Academic-Grade Validation")
+    render_academic_validation("validation_basic.json")
 
     render_disclaimer()
     render_footer()
