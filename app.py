@@ -1,5 +1,5 @@
 """
-QRS Standard Signal System
+FRM Standard ETF System
 FerryRichMan Limited
 ──────────────────────────────────────────────────────────
 Streamlit App — Monthly Momentum ETF Signal Dashboard
@@ -490,7 +490,7 @@ def render_header():
         letter-spacing: -2px;
         line-height: 1.12;
         margin-bottom: 10px;
-    ">QRS Standard<br><span style="color:#6366f1;">Signal System</span></div>
+    ">FRM Standard<br><span style="color:#6366f1;">ETF SYSTEM</span></div>
     <div style="
         font-size: 15px;
         color: #475569;
@@ -994,16 +994,16 @@ def render_cumulative_chart(stats: dict):
             hovertemplate="%{x|%Y-%m}  SPY B&H: <b>$%{y:,.0f}</b><extra></extra>",
         ))
 
-    # QRS strategy
+    # FRM Standard strategy
     fig.add_trace(go.Scatter(
         x=cum.index,
         y=cum.values,
-        name="QRS 策略",
+        name="FRM 策略",
         mode="lines",
         line=dict(color="#818cf8", width=2.5),
         fill="tozeroy",
         fillcolor="rgba(129,140,248,0.07)",
-        hovertemplate="%{x|%Y-%m}  QRS: <b>$%{y:,.0f}</b><extra></extra>",
+        hovertemplate="%{x|%Y-%m}  FRM: <b>$%{y:,.0f}</b><extra></extra>",
     ))
 
     # MDD start/end markers
@@ -1272,7 +1272,7 @@ def render_footer():
     ">FerryRichMan Limited</div>
     <div style="font-size:10px;color:#1e293b;">
         &copy; {year} FerryRichMan Limited &middot; All Rights Reserved<br>
-        QRS Standard Signal System &middot; Powered by Python &amp; Streamlit
+        FRM Standard ETF System &middot; Powered by Python &amp; Streamlit
     </div>
 </div>
         """,
@@ -1355,7 +1355,7 @@ def render_momentum_table(prices):
 # ══════════════════════════════════════════════════════════
 def main():
     st.set_page_config(
-        page_title="QRS Signal · FerryRichMan Limited",
+        page_title="FRM Standard ETF System · FerryRichMan Limited",
         page_icon="📊",
         layout="centered",
         initial_sidebar_state="expanded",
