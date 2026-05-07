@@ -1351,6 +1351,202 @@ def render_momentum_table(prices):
 
 
 # ══════════════════════════════════════════════════════════
+#  AUTH — FRM HMAC token gate (federated with POPI subscription)
+#  Token format: <payload_b64>.<sig_b64>  where payload = {plan, exp}
+#  Verification is fully offline (no API call) — independence preserved.
+# ══════════════════════════════════════════════════════════
+import os
+import hmac
+import hashlib
+import base64
+import json
+
+# Plans that this app accepts. Standard / Premium are now SEPARATE SKUs:
+#   - Buying Premium alone does NOT grant Standard (different strategy).
+#   - To get both, customer must buy ETF Bundle or full FRM Bundle.
+# admin = master key; frm-bundle-* = all-systems combo.
+ALLOWED_PLANS_FOR_THIS_APP = {
+    "etf-std-monthly", "etf-std-annual", "etf-std-lifetime",
+    "etf-bundle-monthly", "etf-bundle-annual", "etf-bundle-lifetime",
+    "frm-bundle-monthly", "frm-bundle-annual", "frm-bundle-lifetime",
+    "admin",
+}
+
+
+def _frm_secret() -> bytes:
+    """Load shared HMAC secret. Set in Streamlit Cloud → Settings → Secrets:
+        FRM_SUB_SECRET = "<same hex as POPI backend>"
+    """
+    try:
+        return st.secrets["FRM_SUB_SECRET"].encode("utf-8")
+    except (KeyError, FileNotFoundError):
+        return os.environ.get("FRM_SUB_SECRET", "").encode("utf-8")
+
+
+def _verify_frm_token(token: str):
+    """Verify HMAC-signed token. Returns payload dict if valid, else None.
+    Mirrors POPI backend/main.py::_verify_sub_token exactly."""
+    secret = _frm_secret()
+    if not secret or not token or "." not in token:
+        return None
+    try:
+        p64, s64 = token.rsplit(".", 1)
+        expected = hmac.new(secret, p64.encode(), hashlib.sha256).digest()
+        provided = base64.urlsafe_b64decode(s64 + "=" * (-len(s64) % 4))
+        if not hmac.compare_digest(expected, provided):
+            return None
+        payload = json.loads(base64.urlsafe_b64decode(p64 + "=" * (-len(p64) % 4)))
+        if payload.get("exp", 0) < int(time.time()):
+            return None
+        return payload   # {"plan": str, "exp": int}
+    except Exception:
+        return None
+
+
+def _read_url_token() -> str:
+    """Best-effort read of ?token=... from URL (Streamlit ≥1.30 API)."""
+    try:
+        v = st.query_params.get("token", "")
+        if isinstance(v, list):
+            return v[0] if v else ""
+        return v or ""
+    except Exception:
+        return ""
+
+
+def render_login_page():
+    """Branded gate — Standard uses indigo/cyan to match the app theme
+    (Premium uses amber/red)."""
+    st.markdown(
+        """
+<div style="max-width: 480px; margin: 60px auto 30px; text-align: center;">
+    <div style="display:inline-block;
+        background: linear-gradient(135deg,#818cf8,#34d399);
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        font-size: 13px; font-weight: 800; letter-spacing: 3px;
+        text-transform: uppercase; margin-bottom: 12px;">
+        FerryRichMan Limited &nbsp;·&nbsp; STANDARD
+    </div>
+    <div style="font-size: 38px; font-weight: 900; color: #f1f5f9;
+        letter-spacing: -2px; line-height: 1.12; margin-bottom: 8px;">
+        FRM Standard<br>
+        <span style="color:#818cf8;">ETF SYSTEM</span>
+    </div>
+    <div style="font-size: 14px; color: #475569; margin-bottom: 32px;">
+        🔒 訂閱用戶專屬 · Subscriber Access Only
+    </div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    col_l, col_m, col_r = st.columns([1, 2, 1])
+    with col_m:
+        st.markdown(
+            """
+<div style="background: linear-gradient(135deg,#0f1a35 0%,#0c2030 100%);
+    border: 1.5px solid #818cf855; border-radius: 16px;
+    padding: 28px 28px 4px; margin-bottom: 16px;">
+    <div style="font-size: 11px; color: #818cf8; font-weight: 800;
+        text-transform: uppercase; letter-spacing: 2px; margin-bottom: 8px;">
+        🔑 貼上解鎖 Token
+    </div>
+    <div style="font-size: 12px; color: #94a3b8; line-height: 1.6; margin-bottom: 6px;">
+        喺 <a href="https://ferryrichman.com" target="_blank"
+        style="color:#818cf8;text-decoration:none;">ferryrichman.com</a>
+        貼解鎖碼後，撳「Standard」會自動帶 Token 過嚟。
+    </div>
+</div>
+            """,
+            unsafe_allow_html=True,
+        )
+        pasted = st.text_input(
+            "Token",
+            type="password",
+            label_visibility="collapsed",
+            placeholder="貼 Token 或喺 ferryrichman.com 直接 click 進入...",
+            key="frm_token_input",
+        )
+        submit = st.button("🚀 進入 Standard System", use_container_width=True, type="primary")
+
+        if submit:
+            secret = _frm_secret()
+            if not secret:
+                st.error(
+                    "⚠️ Server 未設定 `FRM_SUB_SECRET`。"
+                    "請於 Streamlit Cloud → App settings → Secrets 配置。"
+                )
+                return False
+            sub = _verify_frm_token((pasted or "").strip())
+            if not sub:
+                st.error("❌ Token 無效或已過期。請喺 ferryrichman.com 重新解鎖。")
+            elif sub["plan"] not in ALLOWED_PLANS_FOR_THIS_APP:
+                st.error(
+                    "❌ 你嘅訂閱不包含 ETF Standard 訪問權限。"
+                    "請訂閱 ETF Standard、ETF Bundle (Std + Prem) 或全套餐 Bundle。"
+                )
+            else:
+                st.session_state["frm_sub"] = sub
+                st.rerun()
+
+        st.markdown(
+            """
+<div style="text-align:center; margin-top: 28px; padding-top: 20px;
+    border-top: 1px solid #1e293b;">
+    <div style="font-size: 12px; color: #64748b; margin-bottom: 6px;">
+        仲未訂閱？
+    </div>
+    <a href="https://ferryrichman.com" target="_blank"
+       style="display:inline-block; background:#1e293b; color:#cbd5e1;
+       text-decoration:none; padding:10px 24px; border-radius:10px;
+       font-size:12px; font-weight:700; letter-spacing:0.5px;">
+       📈 訂閱 Standard &nbsp;→
+    </a>
+    <div style="font-size: 10px; color: #334155; margin-top: 14px;">
+        SPY/VEU/BIL · 17yr CAGR 9.7% · 月度 WhatsApp 訊號
+    </div>
+</div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.markdown(
+        """
+<div style="max-width: 480px; margin: 32px auto 0; text-align: center;
+    font-size: 10px; color: #1e293b; line-height: 1.6;">
+    本系統僅供已訂閱用戶參考使用，不構成任何投資建議。<br>
+    投資涉及風險，過去表現不代表未來。
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+    return False
+
+
+def check_authentication() -> bool:
+    """Gate. Returns True if valid Token unlocks this app, else renders login.
+
+    Token sources (in order):
+      1. st.session_state['frm_sub']  — cached after first successful verify
+      2. ?token=... URL query param   — handoff from ferryrichman.com
+      3. Pasted in render_login_page text_input
+    """
+    cached = st.session_state.get("frm_sub")
+    if (cached and cached.get("exp", 0) > int(time.time())
+            and cached.get("plan") in ALLOWED_PLANS_FOR_THIS_APP):
+        return True
+
+    url_token = _read_url_token()
+    if url_token:
+        sub = _verify_frm_token(url_token)
+        if sub and sub["plan"] in ALLOWED_PLANS_FOR_THIS_APP:
+            st.session_state["frm_sub"] = sub
+            return True
+
+    return render_login_page()
+
+
+# ══════════════════════════════════════════════════════════
 #  MAIN
 # ══════════════════════════════════════════════════════════
 def main():
@@ -1361,6 +1557,11 @@ def main():
         initial_sidebar_state="expanded",
     )
     inject_css()
+
+    # ── Gate behind FRM token ──
+    if not check_authentication():
+        st.stop()
+
     render_header()
 
     with st.spinner("\u6b63\u5728\u7372\u53d6\u6700\u65b0\u5e02\u5834\u6578\u64da..."):
