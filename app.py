@@ -618,6 +618,13 @@ def render_header():
     border-bottom: 1px solid #1e293b;
     margin-bottom: 24px;
 ">
+    <a href="https://ferryrichman.com" target="_blank"
+       style="display:inline-block; background:#1e293b; color:#818cf8;
+       text-decoration:none; padding:7px 20px; border-radius:8px;
+       font-size:12px; font-weight:700; border:1px solid #818cf833;
+       margin-bottom:18px; letter-spacing:0.5px;">
+       🏠 回主頁 &middot; ferryrichman.com
+    </a>
     <div style="
         display:inline-block;
         background: linear-gradient(135deg,#6366f1,#8b5cf6);
