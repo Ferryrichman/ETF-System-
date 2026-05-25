@@ -612,19 +612,20 @@ def calc_annual(prices: pd.DataFrame) -> dict:
 def render_header():
     st.markdown(
         """
+<div style="text-align:left; padding: 8px 0 0;">
+    <a href="https://ferryrichman.com" target="_blank"
+       style="display:inline-block; background:#1e293b; color:#818cf8;
+       text-decoration:none; padding:6px 14px; border-radius:8px;
+       font-size:11px; font-weight:700; border:1px solid #818cf833;">
+       🏠 回主頁
+    </a>
+</div>
 <div style="
     text-align:center;
-    padding: 32px 0 28px;
+    padding: 24px 0 28px;
     border-bottom: 1px solid #1e293b;
     margin-bottom: 24px;
 ">
-    <a href="https://ferryrichman.com" target="_blank"
-       style="display:inline-block; background:#1e293b; color:#818cf8;
-       text-decoration:none; padding:7px 20px; border-radius:8px;
-       font-size:12px; font-weight:700; border:1px solid #818cf833;
-       margin-bottom:18px; letter-spacing:0.5px;">
-       🏠 回主頁 &middot; ferryrichman.com
-    </a>
     <div style="
         display:inline-block;
         background: linear-gradient(135deg,#6366f1,#8b5cf6);
