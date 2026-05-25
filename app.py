@@ -1420,6 +1420,13 @@ def render_footer():
         &copy; {year} FerryRichMan Limited &middot; All Rights Reserved<br>
         FRM Standard ETF System &middot; Powered by Python &amp; Streamlit
     </div>
+    <a href="https://ferryrichman.com" target="_blank"
+       style="display:inline-block; margin-top:14px; background:#1e293b;
+       color:#818cf8; text-decoration:none; padding:10px 28px;
+       border-radius:10px; font-size:13px; font-weight:700;
+       border:1px solid #818cf833; letter-spacing:0.5px;">
+       🏠 回主頁 &middot; ferryrichman.com
+    </a>
 </div>
         """,
         unsafe_allow_html=True,
