@@ -185,10 +185,14 @@ def inject_content_protection():
 
 
 def inject_watermark():
-    """Full-page repeating watermark — anti-screenshot with session fingerprint."""
+    """Full-page repeating watermark — anti-screenshot with session + user fingerprint."""
     sid = st.session_state.get("frm_session_id", "")
     tag = sid[:6].upper() if sid else ""
+    sub = st.session_state.get("frm_sub", {})
+    user_code = sub.get("code", "")
     label = "FerryRichMan LTD"
+    if user_code:
+        label += "  " + user_code
     if tag:
         label += "  #" + tag
     svg = (
