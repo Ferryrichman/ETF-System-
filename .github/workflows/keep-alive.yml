@@ -1,0 +1,24 @@
+name: Keep Alive
+
+# Ping the Streamlit app every 25 minutes to prevent free-tier sleep.
+# Streamlit Cloud puts apps to sleep after ~7 days of no traffic.
+# This lightweight job (~10s) keeps the app permanently awake.
+#
+# Free-tier budget (private repo): 2000 min/month — this uses ~540 min.
+# Note: GitHub Actions cron may have up to 15 min delay on free tier.
+
+on:
+  schedule:
+    - cron: '*/25 * * * *'   # every 25 min — 3x/hour
+  workflow_dispatch:          # allow manual trigger from Actions tab
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Ping FRM Standard ETF System
+        run: |
+          CODE=$(curl -sS -o /dev/null -w "%{http_code}" \
+                 "https://nxdjsvhpz9j8jmhvefttlh.streamlit.app/" || true)
+          echo "HTTP $CODE at $(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)"
