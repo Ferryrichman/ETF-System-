@@ -17,6 +17,8 @@ import plotly.graph_objects as go
 import time
 import warnings
 warnings.filterwarnings("ignore")
+import uuid
+import urllib.parse
 from academic_validation_ui import render_academic_validation
 
 # Hong Kong timezone (UTC+8) — no external dependency
@@ -128,8 +130,152 @@ div[data-testid="stTextArea"] label { display: none; }
 
 /* ── Metric delta hack ── */
 [data-testid="stMetricDelta"] { font-size: 13px !important; }
+
+/* ── Content Protection ── */
+[data-testid="stAppViewContainer"], [data-testid="stMarkdownContainer"],
+.stTabs, .stDataFrame {
+    -webkit-user-select: none !important;
+    -moz-user-select: none !important;
+    -ms-user-select: none !important;
+    user-select: none !important;
+}
+input, textarea, [contenteditable] {
+    -webkit-user-select: text !important;
+    user-select: text !important;
+}
+@media print {
+    body, body * { display: none !important; visibility: hidden !important; }
+    html::after {
+        content: "FerryRichMan LTD — Print Disabled";
+        display: block; text-align: center; font-size: 24px; padding: 100px;
+    }
+}
+img { -webkit-user-drag: none !important; }
 </style>
         """,
+        unsafe_allow_html=True,
+    )
+
+
+# ══════════════════════════════════════════════════════════
+#  SECURITY — Content Protection + Watermark + Rebalance
+# ══════════════════════════════════════════════════════════
+
+def inject_content_protection():
+    """Block right-click, copy shortcuts, F12, PrintScreen via parent-frame JS."""
+    components.html("""
+<script>
+(function(){
+    var d = window.parent.document;
+    d.addEventListener('contextmenu', function(e){ e.preventDefault(); });
+    d.addEventListener('keydown', function(e){
+        var block = false;
+        if (e.ctrlKey || e.metaKey) {
+            var k = e.key.toLowerCase();
+            if ('cusp'.indexOf(k) !== -1) block = true;
+            if (e.shiftKey && 'ijc'.indexOf(k) !== -1) block = true;
+        }
+        if (e.key === 'F12' || e.key === 'PrintScreen') block = true;
+        if (block) { e.preventDefault(); e.stopPropagation(); }
+    }, true);
+    d.addEventListener('dragstart', function(e){ e.preventDefault(); });
+})();
+</script>
+""", height=0)
+
+
+def inject_watermark():
+    """Full-page repeating watermark — anti-screenshot with session fingerprint."""
+    sid = st.session_state.get("frm_session_id", "")
+    tag = sid[:6].upper() if sid else ""
+    label = "FerryRichMan LTD"
+    if tag:
+        label += "  #" + tag
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="340" height="220">'
+        '<text transform="rotate(-28 170 110)" x="50%" y="50%" '
+        'font-size="15" fill="rgba(255,255,255,0.035)" text-anchor="middle" '
+        'font-family="sans-serif" font-weight="700">' + label + '</text></svg>'
+    )
+    encoded = urllib.parse.quote(svg)
+    st.markdown(
+        f'''
+<style>
+[data-testid="stAppViewContainer"]::after {{
+    content: "";
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background-image: url("data:image/svg+xml,{encoded}");
+    background-repeat: repeat;
+    pointer-events: none;
+    z-index: 99999;
+}}
+</style>
+        ''',
+        unsafe_allow_html=True,
+    )
+
+
+def render_rebalance_notice(info: dict):
+    """Countdown to next rebalance + latest signal change alert."""
+    if not info:
+        return
+
+    now = info["now"]
+
+    next_first = (now.replace(day=1) + timedelta(days=32)).replace(day=1)
+    next_naive = next_first.replace(tzinfo=None) if next_first.tzinfo else next_first
+    rebal = next_naive
+    while rebal.weekday() >= 5:
+        rebal += timedelta(days=1)
+
+    now_naive = now.replace(tzinfo=None) if now.tzinfo else now
+    days_left = (rebal - now_naive).days
+    if days_left < 0:
+        days_left = 0
+
+    if days_left <= 3:
+        color, bg, border_c = "#ef4444", "#1a0f0f", "#ef444433"
+        icon, urgency = "🚨", "即將換倉！"
+    elif days_left <= 7:
+        color, bg, border_c = "#fbbf24", "#1a1508", "#fbbf2433"
+        icon, urgency = "⏰", "換倉將近"
+    else:
+        color, bg, border_c = "#4ade80", "#0f1a12", "#4ade8033"
+        icon, urgency = "📅", "正常倒數"
+
+    changed = info.get("changed", False)
+    cur = info.get("current", "?")
+    prev = info.get("prev", "?")
+    if changed:
+        change_html = f'<span style="color:#fbbf24;">🔄 持倉變動：{prev} &rarr; {cur}</span>'
+    else:
+        change_html = f'<span style="color:#4ade80;">✅ 維持持倉：{cur}</span>'
+
+    rebal_str = rebal.strftime("%Y-%m-%d (%a)")
+
+    st.markdown(
+        f'''
+<div style="background:{bg}; border:1px solid {border_c}; border-radius:14px;
+            padding:14px 20px; margin:8px 0 20px;">
+    <div style="display:flex; justify-content:space-between; align-items:center;
+                flex-wrap:wrap; gap:8px;">
+        <div>
+            <span style="font-size:13px; color:{color}; font-weight:700;">
+                {icon} 下次換倉：{rebal_str}
+            </span>
+            <span style="background:{color}18; color:{color}; padding:3px 10px;
+                         border-radius:100px; font-size:11px; font-weight:700;
+                         margin-left:8px;">
+                {days_left} 天後 &middot; {urgency}
+            </span>
+        </div>
+        <div style="font-size:12px;">
+            {change_html}
+        </div>
+    </div>
+</div>
+        ''',
         unsafe_allow_html=True,
     )
 
@@ -1432,6 +1578,32 @@ def _read_url_token() -> str:
         return ""
 
 
+# ── Single-device session management (admin exempt) ─────
+
+@st.cache_resource
+def _get_session_store():
+    """Server-wide session store — persists while app runs, resets on deploy."""
+    return {}   # { token_hash_16: {"sid": str, "ts": float} }
+
+
+def _register_token_session(token: str) -> str:
+    """Register a new session for this token, kicking any prior session."""
+    store = _get_session_store()
+    key = hashlib.sha256(token.encode()).hexdigest()[:16]
+    sid = uuid.uuid4().hex[:12]
+    store[key] = {"sid": sid, "ts": time.time()}
+    return sid
+
+
+def _verify_token_session(token_hash: str, sid: str) -> bool:
+    """Check if this session_id is still the active one for this token hash."""
+    store = _get_session_store()
+    entry = store.get(token_hash)
+    if entry is None:
+        return True   # no record = legacy session, allow
+    return entry["sid"] == sid
+
+
 def render_login_page():
     """Branded gate — Standard uses indigo/cyan to match the app theme
     (Premium uses amber/red)."""
@@ -1505,6 +1677,11 @@ def render_login_page():
                 )
             else:
                 st.session_state["frm_sub"] = sub
+                if sub.get("plan") != "admin":
+                    _tok = (pasted or "").strip()
+                    sid = _register_token_session(_tok)
+                    st.session_state["frm_session_id"] = sid
+                    st.session_state["frm_token_hash"] = hashlib.sha256(_tok.encode()).hexdigest()[:16]
                 st.rerun()
 
         st.markdown(
@@ -1548,10 +1725,25 @@ def check_authentication() -> bool:
       1. st.session_state['frm_sub']  — cached after first successful verify
       2. ?token=... URL query param   — handoff from ferryrichman.com
       3. Pasted in render_login_page text_input
+
+    Single-device enforcement: admin tokens bypass session check.
     """
     cached = st.session_state.get("frm_sub")
     if (cached and cached.get("exp", 0) > int(time.time())
             and _has_access(cached)):
+        # Single-device check (admin exempt)
+        if not _is_admin():
+            sid = st.session_state.get("frm_session_id", "")
+            th = st.session_state.get("frm_token_hash", "")
+            if sid and th and not _verify_token_session(th, sid):
+                st.session_state.pop("frm_sub", None)
+                st.session_state.pop("frm_session_id", None)
+                st.session_state.pop("frm_token_hash", None)
+                st.warning(
+                    "⚠️ 你嘅帳號已喺另一部裝置登入。\n\n"
+                    "每個訂閱只允許同時一部裝置使用。如需重新登入，請重新輸入 Token。"
+                )
+                return render_login_page()
         return True
 
     url_token = _read_url_token()
@@ -1559,6 +1751,10 @@ def check_authentication() -> bool:
         sub = _verify_frm_token(url_token)
         if sub and _has_access(sub):
             st.session_state["frm_sub"] = sub
+            if sub.get("plan") != "admin":
+                sid = _register_token_session(url_token)
+                st.session_state["frm_session_id"] = sid
+                st.session_state["frm_token_hash"] = hashlib.sha256(url_token.encode()).hexdigest()[:16]
             return True
 
     return render_login_page()
@@ -1629,6 +1825,9 @@ def main():
         st.stop()
 
     render_header()
+    if not _is_admin():
+        inject_content_protection()
+        inject_watermark()
 
     with st.spinner("\u6b63\u5728\u7372\u53d6\u6700\u65b0\u5e02\u5834\u6578\u64da..."):
         prices = load_prices(date_key=_hk_date_key())
@@ -1639,6 +1838,9 @@ def main():
     annual = calc_annual(prices)
 
     render_signal_card(info)
+
+    # Rebalance countdown + signal change alert
+    render_rebalance_notice(info)
 
     section_header("\U0001f4ca", "\u672c\u6708 ETF \u52d5\u529b\u5206\u6578\u6bd4\u8f03")
     st.markdown(
