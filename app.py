@@ -74,7 +74,7 @@ def inject_css():
 <style>
 /* ── Base ── */
 [data-testid="stAppViewContainer"] { background: #0a0f1e !important; }
-[data-testid="stHeader"]           { background: transparent !important; }
+[data-testid="stHeader"]           { background: transparent !important; pointer-events: none !important; }
 [data-testid="stToolbar"]          { display: none; }
 .block-container { padding: 0 1.5rem 5rem !important; max-width: 780px; }
 * { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
