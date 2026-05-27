@@ -1876,9 +1876,11 @@ def main():
         render_scores_chart(info["scores"])
     st.markdown("</div>", unsafe_allow_html=True)
 
-    section_header("📱", "WhatsApp 訊息 — 一鍵複製後轉發")
-    if info:
-        render_whatsapp_section(info, stats)
+    # WhatsApp message — owner only
+    if _is_admin():
+        section_header("📱", "WhatsApp 訊息 — 一鍵複製後轉發")
+        if info:
+            render_whatsapp_section(info, stats)
 
     section_header("📈", "歷史績效")
     render_kpis(stats)
