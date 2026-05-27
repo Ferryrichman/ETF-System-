@@ -132,14 +132,23 @@ div[data-testid="stTextArea"] label { display: none; }
 [data-testid="stMetricDelta"] { font-size: 13px !important; }
 
 /* ── Content Protection ── */
-[data-testid="stAppViewContainer"], [data-testid="stMarkdownContainer"],
-.stTabs, .stDataFrame {
+[data-testid="stAppViewContainer"],
+[data-testid="stAppViewContainer"] *,
+[data-testid="stMarkdownContainer"],
+[data-testid="stMarkdownContainer"] *,
+.stTabs, .stTabs *,
+.stDataFrame, .stDataFrame *,
+pre, code, [data-testid="stCode"],
+[data-testid="stCodeBlock"], [data-testid="stCodeBlock"] * {
     -webkit-user-select: none !important;
     -moz-user-select: none !important;
     -ms-user-select: none !important;
     user-select: none !important;
 }
-input, textarea, [contenteditable] {
+[data-testid="stCodeBlock"] button { display: none !important; }
+[data-testid="stAppViewContainer"] input[type="text"],
+[data-testid="stAppViewContainer"] input[type="password"],
+[data-testid="stAppViewContainer"] textarea {
     -webkit-user-select: text !important;
     user-select: text !important;
 }
@@ -162,23 +171,41 @@ img { -webkit-user-drag: none !important; }
 # ══════════════════════════════════════════════════════════
 
 def inject_content_protection():
-    """Block right-click, copy shortcuts, F12, PrintScreen via parent-frame JS."""
+    """Block right-click, copy, keyboard shortcuts via parent-frame JS."""
     components.html("""
 <script>
 (function(){
-    var d = window.parent.document;
-    d.addEventListener('contextmenu', function(e){ e.preventDefault(); });
-    d.addEventListener('keydown', function(e){
-        var block = false;
-        if (e.ctrlKey || e.metaKey) {
-            var k = e.key.toLowerCase();
-            if ('cusp'.indexOf(k) !== -1) block = true;
-            if (e.shiftKey && 'ijc'.indexOf(k) !== -1) block = true;
+    try {
+        var d = window.parent.document;
+        d.addEventListener('contextmenu', function(e){ e.preventDefault(); }, true);
+        d.addEventListener('copy', function(e){ e.preventDefault(); }, true);
+        d.addEventListener('cut', function(e){ e.preventDefault(); }, true);
+        d.addEventListener('keydown', function(e){
+            var block = false;
+            if (e.ctrlKey || e.metaKey) {
+                var k = e.key.toLowerCase();
+                if ('cusp'.indexOf(k) !== -1) block = true;
+                if (e.shiftKey && 'ijc'.indexOf(k) !== -1) block = true;
+            }
+            if (e.key === 'F12' || e.key === 'PrintScreen') block = true;
+            if (block) { e.preventDefault(); e.stopPropagation(); }
+        }, true);
+        d.addEventListener('dragstart', function(e){ e.preventDefault(); }, true);
+    } catch(e) {}
+    /* Also protect inside this iframe's parent frames */
+    try {
+        var frames = window.parent.document.querySelectorAll('iframe');
+        for (var i = 0; i < frames.length; i++) {
+            try {
+                var fd = frames[i].contentDocument;
+                if (fd) {
+                    fd.addEventListener('copy', function(e){ e.preventDefault(); }, true);
+                    fd.addEventListener('cut', function(e){ e.preventDefault(); }, true);
+                    fd.addEventListener('contextmenu', function(e){ e.preventDefault(); }, true);
+                }
+            } catch(x) {}
         }
-        if (e.key === 'F12' || e.key === 'PrintScreen') block = true;
-        if (block) { e.preventDefault(); e.stopPropagation(); }
-    }, true);
-    d.addEventListener('dragstart', function(e){ e.preventDefault(); });
+    } catch(e) {}
 })();
 </script>
 """, height=0)
@@ -894,6 +921,7 @@ def render_whatsapp_section(info: dict, stats: dict):
     font-family:'Courier New',monospace;
     margin-bottom:14px;
     word-break:break-word;
+    -webkit-user-select:none; user-select:none;
   }}
   .btn {{
     display:block; width:100%;
