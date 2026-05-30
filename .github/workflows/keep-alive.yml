@@ -1,16 +1,45 @@
 name: Keep Alive
 
+# Visit the Streamlit app with a real headless browser to prevent
+# free-tier sleep. Streamlit Cloud tracks WebSocket sessions, not HTTP
+# pings - curl alone (HTTP 303 redirect) does NOT count as traffic.
+
 on:
   schedule:
-    - cron: '*/25 * * * *'
+    - cron: '45 */5 * * *'
   workflow_dispatch:
 
 jobs:
-  ping:
+  visit:
     runs-on: ubuntu-latest
-    timeout-minutes: 1
+    timeout-minutes: 5
     steps:
-      - name: Ping FRM Standard ETF System
+      - name: Install Playwright
         run: |
-          CODE=$(curl -sS -o /dev/null -w "%{http_code}"                  "https://frmetf-standard.streamlit.app/" || true)
-          echo "HTTP $CODE at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          npm init -y --silent
+          npm install playwright --silent
+          npx playwright install chromium --with-deps
+
+      - name: Visit FRM Standard ETF System
+        run: |
+          node -e "
+          const { chromium } = require('playwright');
+          (async () => {
+            const browser = await chromium.launch();
+            const page = await browser.newPage();
+            try {
+              console.log('Visiting frmetf-standard.streamlit.app ...');
+              await page.goto('https://frmetf-standard.streamlit.app/', {
+                waitUntil: 'networkidle',
+                timeout: 90000
+              });
+              await page.waitForTimeout(10000);
+              const title = await page.title();
+              console.log('OK - title:', title, 'at', new Date().toISOString());
+            } catch (err) {
+              console.error('WARN:', err.message);
+            } finally {
+              await browser.close();
+            }
+          })();
+          "
