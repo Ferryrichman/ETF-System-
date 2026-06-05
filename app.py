@@ -503,11 +503,18 @@ def get_current_info(prices: pd.DataFrame) -> dict:
 
     scores = {t: float(prices.loc[cur_row, f"score_{t}"]) for t in TICKERS}
 
+    # YTD return
+    yr = cur_row.year
+    ytd_months = prices["signal_return"].dropna()
+    ytd_months = ytd_months[(ytd_months.index.year == yr) & (ytd_months.index <= cur_row)]
+    ytd_ret = float((1 + ytd_months).prod() - 1) if len(ytd_months) > 0 else None
+
     return {
         "current":      cur_sig,
         "prev":         prev_sig,
         "changed":      cur_sig != prev_sig,
         "last_ret":     float(last_ret) if not np.isnan(last_ret) else None,
+        "ytd_ret":      ytd_ret,
         "scores":       scores,
         "data_date":    cur_row,
         "now":          now,
@@ -714,6 +721,19 @@ def render_signal_card(info: dict):
     else:
         ret_html = ""
 
+    # YTD badge
+    ytd_ret = info.get("ytd_ret")
+    if ytd_ret is not None:
+        ytd_pct = f"{ytd_ret*100:+.1f}%"
+        y_clr = "#4ade80" if ytd_ret >= 0 else "#f87171"
+        y_bg = "#052e16" if ytd_ret >= 0 else "#450a0a"
+        ytd_html = (
+            f'<span class="badge" style="background:{y_bg};color:{y_clr};">'
+            f'📅 YTD {ytd_pct}</span>'
+        )
+    else:
+        ytd_html = ""
+
     # Use components.html so HTML always renders correctly regardless of Streamlit version
     components.html(
         f"""
@@ -774,6 +794,7 @@ def render_signal_card(info: dict):
     <div class="badges">
       {change_html}
       {ret_html}
+      {ytd_html}
     </div>
   </div>
   <div class="main-row">
