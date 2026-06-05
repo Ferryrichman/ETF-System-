@@ -509,16 +509,39 @@ def get_current_info(prices: pd.DataFrame) -> dict:
     ytd_months = ytd_months[(ytd_months.index.year == yr) & (ytd_months.index <= cur_row)]
     ytd_ret = float((1 + ytd_months).prod() - 1) if len(ytd_months) > 0 else None
 
+    # MTD return — daily data for current holding
+    mtd_ret = _get_mtd_return(cur_sig, _hk_date_key())
+
     return {
         "current":      cur_sig,
         "prev":         prev_sig,
         "changed":      cur_sig != prev_sig,
         "last_ret":     float(last_ret) if not np.isnan(last_ret) else None,
         "ytd_ret":      ytd_ret,
+        "mtd_ret":      mtd_ret,
         "scores":       scores,
         "data_date":    cur_row,
         "now":          now,
     }
+
+
+@st.cache_data(show_spinner=False)
+def _get_mtd_return(sig: str, date_key: str = ""):
+    """MTD return using daily prices for current holding."""
+    try:
+        today = datetime.today()
+        month_start = today.replace(day=1) - timedelta(days=1)
+        daily = _get_daily_ohlc(sig, month_start, today + timedelta(days=1))
+        daily = daily[daily.index.month == today.month]
+        if daily.empty:
+            return None
+        first_open = float(daily["Open"].iloc[0])
+        last_close = float(daily["Close"].iloc[-1])
+        if pd.isna(first_open) or pd.isna(last_close) or first_open == 0:
+            return None
+        return last_close / first_open - 1
+    except Exception:
+        return None
 
 
 def calc_stats(prices: pd.DataFrame) -> dict:
@@ -734,6 +757,19 @@ def render_signal_card(info: dict):
     else:
         ytd_html = ""
 
+    # MTD badge
+    mtd_ret = info.get("mtd_ret")
+    if mtd_ret is not None:
+        mtd_pct = f"{mtd_ret*100:+.1f}%"
+        m_clr = "#4ade80" if mtd_ret >= 0 else "#f87171"
+        m_bg = "#052e16" if mtd_ret >= 0 else "#450a0a"
+        mtd_html = (
+            f'<span class="badge" style="background:{m_bg};color:{m_clr};">'
+            f'📊 MTD {mtd_pct}</span>'
+        )
+    else:
+        mtd_html = ""
+
     # Use components.html so HTML always renders correctly regardless of Streamlit version
     components.html(
         f"""
@@ -794,6 +830,7 @@ def render_signal_card(info: dict):
     <div class="badges">
       {change_html}
       {ret_html}
+      {mtd_html}
       {ytd_html}
     </div>
   </div>
