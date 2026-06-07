@@ -803,11 +803,11 @@ def render_signal_card(info: dict):
   .label {{ font-size:12px; color:#64748b; font-weight:800;
              text-transform:uppercase; letter-spacing:2px; margin-bottom:5px; }}
   .date  {{ font-size:12px; color:#475569; }}
-  .badges {{ display:flex; flex-direction:column; align-items:flex-end; gap:7px; }}
+  .badges {{ display:grid; grid-template-columns:auto auto; gap:6px; justify-items:end; }}
   .badge {{
-    display:inline-flex; align-items:center; gap:5px;
-    padding:7px 16px; border-radius:100px;
-    font-size:13px; font-weight:700;
+    display:inline-flex; align-items:center; gap:4px;
+    padding:5px 12px; border-radius:100px;
+    font-size:11px; font-weight:700; white-space:nowrap;
   }}
   .main-row {{ display:flex; align-items:center; gap:24px; }}
   .ticker {{
