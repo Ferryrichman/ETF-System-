@@ -501,12 +501,25 @@ def get_current_info(prices: pd.DataFrame) -> dict:
     prev_sig = prices.loc[prev_row, "signal"]
     last_ret = prices.loc[cur_row,  "signal_return"]
 
+    # Fallback: if next month's open isn't available yet, use close/open for the month
+    if np.isnan(last_ret) if isinstance(last_ret, float) else pd.isna(last_ret):
+        try:
+            h = prev_sig
+            o = prices.loc[cur_row, f"{h}_open"]
+            c = prices.loc[cur_row, h]
+            if pd.notna(o) and pd.notna(c) and o != 0:
+                last_ret = c / o - 1
+        except Exception:
+            pass
+
     scores = {t: float(prices.loc[cur_row, f"score_{t}"]) for t in TICKERS}
 
     # YTD return
     yr = cur_row.year
     ytd_months = prices["signal_return"].dropna()
     ytd_months = ytd_months[(ytd_months.index.year == yr) & (ytd_months.index <= cur_row)]
+    if pd.notna(last_ret) and pd.isna(prices.loc[cur_row, "signal_return"]):
+        ytd_months = pd.concat([ytd_months, pd.Series([last_ret], index=[cur_row])])
     ytd_ret = float((1 + ytd_months).prod() - 1) if len(ytd_months) > 0 else None
 
     # MTD return — daily data for current holding
