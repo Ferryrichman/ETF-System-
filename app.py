@@ -588,6 +588,10 @@ def calc_stats(prices: pd.DataFrame) -> dict:
     m_std = float(monthly.std())
     sharpe = float(monthly.mean() * np.sqrt(12) / m_std) if m_std > 0 else None
 
+    # Sortino ratio (annualised, downside-only std, risk-free = 0%)
+    neg = monthly[monthly < 0]
+    sortino = float(monthly.mean() * np.sqrt(12) / neg.std()) if len(neg) > 0 and neg.std() > 0 else None
+
     # Full-history drawdown series (for underwater chart, % values)
     cum_all_norm    = (1 + monthly_all).cumprod()
     dd_series_all   = (cum_all_norm - cum_all_norm.cummax()) / cum_all_norm.cummax() * 100
@@ -653,6 +657,7 @@ def calc_stats(prices: pd.DataFrame) -> dict:
         "drawdown_series": dd_series_all,  # full-history % drawdown for underwater chart
         "max_dd_months":   max_dd_months,  # longest consecutive months underwater (KPI period)
         "sharpe":          sharpe,
+        "sortino":         sortino,
         "cagr_3yr":        trailing_cagr(3),
         "cagr_5yr":        trailing_cagr(5),
         "cagr_10yr":       trailing_cagr(10),
@@ -901,16 +906,16 @@ def render_whatsapp_section(info: dict, stats: dict):
     prev     = info["prev"]
     changed  = info["changed"]
     last_ret = info["last_ret"]
+    ytd_ret  = info.get("ytd_ret")
+    mtd_ret  = info.get("mtd_ret")
     now      = info["now"]
 
     # Month display: e.g. "4月2026"
     month_str = f"{now.month}月{now.year}"
 
-    # Return string — show sign only when negative so it reads naturally
-    if last_ret is not None:
-        ret_str = f"{last_ret*100:.2f}%" if last_ret >= 0 else f"{last_ret*100:.2f}%"
-    else:
-        ret_str = "N/A"
+    ret_str = f"{last_ret*100:.2f}%" if last_ret is not None else "N/A"
+    mtd_str = f"{mtd_ret*100:+.2f}%" if mtd_ret is not None else "N/A"
+    ytd_str = f"{ytd_ret*100:+.2f}%" if ytd_ret is not None else "N/A"
 
     change_line = (
         f"🔄 ETF 轉換：{prev} → {sig}"
@@ -923,10 +928,10 @@ def render_whatsapp_section(info: dict, stats: dict):
     bt_end   = stats["backtest_end"].year   if stats.get("backtest_end")   is not None else "—"
     bt_period = f"（{bt_start}-{bt_end}）"
 
-    # ── Build CAGR / MDD line ──
-    mdd_start_str = stats["mdd_start"].strftime("%Y-%m") if stats.get("mdd_start") is not None else "—"
-    mdd_end_str   = stats["mdd_end"].strftime("%Y-%m")   if stats.get("mdd_end")   is not None else "—"
-    mdd_period    = f"（{mdd_start_str}~{mdd_end_str}）"
+    sharpe_v  = stats.get("sharpe")
+    sortino_v = stats.get("sortino")
+    sharpe_str  = f"{sharpe_v:.2f}"  if sharpe_v  is not None else "—"
+    sortino_str = f"{sortino_v:.2f}" if sortino_v is not None else "—"
 
     c3  = stats.get("cagr_3yr")
     c5  = stats.get("cagr_5yr")
@@ -937,20 +942,25 @@ def render_whatsapp_section(info: dict, stats: dict):
 
     msg = (
         f"📊【FRM Standard Signal】{month_str}\n"
-        f"✅ 本月持倉：{sig}   {ETF_INFO[sig]['name']}\n"
+        f"\n"
+        f"✅ 本月持倉：{sig}\n"
         f"\n"
         f"{change_line}\n"
         f"📈 上月策略回報：{ret_str}\n"
+        f"📊 本月MTD：{mtd_str}\n"
+        f"📅 YTD：{ytd_str}\n"
         f"\n"
         f"📅 執行時間：本月第一個交易日\n"
         f"⏰ 美股開市後任何時間均可執行\n"
         f"\n"
         f"回測CAGR：{stats['cagr']*100:.1f}% {bt_period}  |  MDD：{stats['mdd']*100:.1f}%\n"
+        f"Sharpe：{sharpe_str}  |  Sortino：{sortino_str}\n"
         f"{yr3_line}\n"
         f"{yr5_line}\n"
         f"{yr10_line}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"@FRM Standard · FerryRichMan Limited\n"
+        f"🌐 ferryrichman.com\n"
         f"（不構成任何投資建議）"
     )
 
