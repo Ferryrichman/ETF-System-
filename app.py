@@ -15,7 +15,6 @@ from datetime import datetime, timezone, timedelta
 from dateutil.relativedelta import relativedelta
 import plotly.graph_objects as go
 import time
-import random
 import warnings
 warnings.filterwarnings("ignore")
 import uuid
@@ -345,8 +344,7 @@ def _get_daily_ohlc(t: str, start, end) -> pd.DataFrame:
         result["Close"] = adj_c   # adj close → momentum score calculation
         return result.sort_index()
 
-    backoff_schedule = [2, 5, 10]  # seconds, +0-1s jitter — E3 retry-with-backoff
-    for attempt in range(len(backoff_schedule) + 1):
+    for attempt in range(4):
         try:
             raw = yf.download(
                 t, start=start_str, end=end_str,
@@ -357,8 +355,7 @@ def _get_daily_ohlc(t: str, start, end) -> pd.DataFrame:
         except Exception:
             pass
 
-        if attempt < len(backoff_schedule):
-            time.sleep(backoff_schedule[attempt] + random.uniform(0, 1))
+        time.sleep(2 ** attempt)
 
     return pd.DataFrame(columns=["Open", "Close"])
 
@@ -386,7 +383,7 @@ def load_prices(date_key: str = "") -> pd.DataFrame:
         daily = _get_daily_ohlc(t, start, end)
         if daily.empty or daily["Close"].dropna().empty:
             st.error(
-                f"⚠️ 無法從 Yahoo Finance 下載 **{t}** 數據（已重試 3 次）。\n\n"
+                f"⚠️ 無法從 Yahoo Finance 下載 **{t}** 數據。\n\n"
                 "Yahoo Finance 暫時限制，請等候 1-2 分鐘後重新整理頁面（F5）。"
             )
             st.stop()
@@ -1058,7 +1055,7 @@ function cp() {{
 </body>
 </html>
         """,
-        height=490,
+        height=720,
         scrolling=False,
     )
 
