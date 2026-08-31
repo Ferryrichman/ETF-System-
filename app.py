@@ -372,8 +372,11 @@ def load_prices(date_key: str = "") -> pd.DataFrame:
     Cache key = HK date string (rolled at HKT 06:00, after US close).
     To force a hard reset, bump _CACHE_VERSION below.
     """
-    _CACHE_VERSION = "adj_v8"   # ← bump this string to force a fresh download (ignores date_key)
-    end   = datetime.today()
+    _CACHE_VERSION = "adj_v9"   # ← bump this string to force a fresh download (ignores date_key)
+    # HKT date + 1 day: yfinance `end` is EXCLUSIVE, and the server runs UTC
+    # (8h behind HK) — using bare datetime.today() drops the latest completed
+    # US session during the HKT 07:00-08:00 window after cache rollover.
+    end   = datetime.now(_HK_TZ).replace(tzinfo=None) + timedelta(days=1)
     start = end - relativedelta(years=22)
 
     close_frames = {}   # month-end close  (signal)
@@ -542,7 +545,9 @@ def get_current_info(prices: pd.DataFrame) -> dict:
 def _get_mtd_return(sig: str, date_key: str = ""):
     """MTD return using daily prices for current holding."""
     try:
-        today = datetime.today()
+        # HKT, not server UTC — keeps the month filter aligned with the
+        # signal month shown in the UI (server is 8h behind HK)
+        today = datetime.now(_HK_TZ).replace(tzinfo=None)
         month_start = today.replace(day=1) - timedelta(days=1)
         daily = _get_daily_ohlc(sig, month_start, today + timedelta(days=1))
         daily = daily[daily.index.month == today.month]
