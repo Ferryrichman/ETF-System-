@@ -568,6 +568,7 @@ def get_current_info(prices: pd.DataFrame) -> dict:
         "mtd_ret":      mtd_ret,
         "scores":       scores,
         "data_date":    cur_row,
+        "last_daily":   getattr(prices, "attrs", {}).get("last_daily_date", ""),
         "now":          now,
     }
 
@@ -953,6 +954,21 @@ def render_whatsapp_section(info: dict, stats: dict):
     mtd_str = f"{mtd_ret*100:+.2f}%" if mtd_ret is not None else "N/A"
     ytd_str = f"{ytd_ret*100:+.2f}%" if ytd_ret is not None else "N/A"
 
+    # Date ranges for each figure
+    data_dt = info["data_date"]          # month-end of last completed month
+    prev_range = f"{data_dt.month}月1日–{data_dt.month}月{data_dt.day}日"
+    ytd_range  = f"1月1日–{data_dt.month}月{data_dt.day}日"
+    mtd_range  = ""
+    last_daily = info.get("last_daily", "")
+    if mtd_ret is not None and last_daily:
+        try:
+            ld = datetime.strptime(last_daily, "%Y-%m-%d")
+            if ld.month == now.month:
+                mtd_range = f"{now.month}月1日–{ld.month}月{ld.day}日"
+        except Exception:
+            pass
+    mtd_label = f"本月MTD（{mtd_range}）" if mtd_range else "本月MTD"
+
     change_line = (
         f"🔄 ETF 轉換：{prev} → {sig}"
         if changed
@@ -982,9 +998,9 @@ def render_whatsapp_section(info: dict, stats: dict):
         f"✅ 本月持倉：{sig}\n"
         f"\n"
         f"{change_line}\n"
-        f"📈 上月策略回報：{ret_str}\n"
-        f"📊 本月MTD：{mtd_str}\n"
-        f"📅 YTD：{ytd_str}\n"
+        f"📈 上月策略回報（{prev_range}）：{ret_str}\n"
+        f"📊 {mtd_label}：{mtd_str}\n"
+        f"📅 YTD（{ytd_range}）：{ytd_str}\n"
         f"\n"
         f"📅 執行時間：本月第一個交易日\n"
         f"⏰ 美股開市後任何時間均可執行\n"
