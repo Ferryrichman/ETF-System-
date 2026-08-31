@@ -1115,6 +1115,48 @@ function cp() {{
     )
 
 
+def render_price_ladder(info: dict):
+    """Prominent banner: YTD-linked price ladder + grandfathering + referral CTA."""
+    ytd = info.get("ytd_ret")
+    if ytd is None:
+        return
+    ytd_pct = ytd * 100
+    hikes = max(0, int(ytd_pct // 10))
+    next_trigger = (hikes + 1) * 10
+    prog = max(0.0, min(1.0, (ytd_pct - hikes * 10) / 10.0)) if ytd_pct > 0 else 0.0
+    prog_pct = int(prog * 100)
+    ytd_clr = "#4ade80" if ytd >= 0 else "#f87171"
+    html = (
+        '<div style="background:linear-gradient(135deg,#0f172a,#1e1b4b);border:1.5px solid #6366f155;'
+        'border-radius:18px;padding:20px 22px;margin:14px 0 6px;">'
+        '<div style="display:flex;flex-wrap:wrap;gap:16px;align-items:center;justify-content:space-between;">'
+        '<div style="min-width:220px;">'
+        '<div style="font-size:11px;color:#818cf8;font-weight:800;letter-spacing:1.5px;text-transform:uppercase;">'
+        '💎 訂閱費與業績掛鈎</div>'
+        '<div style="font-size:13px;color:#94a3b8;margin-top:6px;">策略 YTD 每升 10%，下一季訂閱費上調</div>'
+        '</div>'
+        '<div style="display:flex;gap:26px;text-align:center;">'
+        f'<div><div style="font-size:26px;font-weight:900;color:{ytd_clr};">{ytd_pct:+.1f}%</div>'
+        '<div style="font-size:10px;color:#64748b;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:3px;">現時 YTD</div></div>'
+        f'<div><div style="font-size:26px;font-weight:900;color:#818cf8;">{hikes} 次</div>'
+        '<div style="font-size:10px;color:#64748b;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:3px;">已觸發加價</div></div>'
+        '</div></div>'
+        '<div style="margin-top:14px;">'
+        '<div style="display:flex;justify-content:space-between;font-size:10px;color:#64748b;font-weight:700;margin-bottom:5px;">'
+        f'<span>距下次加價（YTD +{next_trigger}%）</span><span>{prog_pct}%</span></div>'
+        '<div style="height:8px;background:#1e293b;border-radius:99px;overflow:hidden;">'
+        f'<div style="width:{prog_pct}%;height:100%;background:linear-gradient(90deg,#6366f1,#8b5cf6);border-radius:99px;"></div>'
+        '</div></div>'
+        '<div style="display:flex;flex-wrap:wrap;gap:10px;justify-content:space-between;align-items:center;margin-top:14px;">'
+        '<div style="font-size:12px;color:#4ade80;font-weight:700;">🔒 現有會員永久鎖定現價，加價只影響新訂閱</div>'
+        '<a href="https://ferryrichman.com" target="_blank" style="background:linear-gradient(135deg,#6366f1,#8b5cf6);'
+        'color:#fff;text-decoration:none;padding:10px 18px;border-radius:99px;font-size:13px;font-weight:800;'
+        'box-shadow:0 4px 14px rgba(99,102,241,0.35);">📣 推薦朋友 · 趁加價前鎖定現價 →</a>'
+        '</div></div>'
+    )
+    st.markdown(html, unsafe_allow_html=True)
+
+
 def render_kpis(stats: dict):
     kpi_style = """
         background:#111827;
@@ -2011,6 +2053,9 @@ def main():
     annual = calc_annual(prices)
 
     render_signal_card(info)
+
+    # YTD-linked price ladder banner (prominent, below signal)
+    render_price_ladder(info)
 
     # Rebalance countdown + signal change alert
     render_rebalance_notice(info)
