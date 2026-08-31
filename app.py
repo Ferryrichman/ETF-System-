@@ -995,7 +995,7 @@ def render_whatsapp_section(info: dict, stats: dict):
         f"{yr5_line}\n"
         f"{yr10_line}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"@FRM Standard · FerryRichMan Limited\n"
+        f"@FRM ETF Standard · FerryRichMan Limited\n"
         f"🌐 ferryrichman.com\n"
         f"（不構成任何投資建議）"
     )
