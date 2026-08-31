@@ -1010,6 +1010,9 @@ def render_whatsapp_section(info: dict, stats: dict):
         f"{yr3_line}\n"
         f"{yr5_line}\n"
         f"{yr10_line}\n"
+        f"\n"
+        f"💎 加價機制：策略 YTD 每升 10%，下一季訂閱費上調\n"
+        f"🔒 現有會員鎖定現價，永不受加價影響 — 愈早加入愈抵\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"@FRM ETF Standard · FerryRichMan Limited\n"
         f"🌐 ferryrichman.com\n"
@@ -1107,7 +1110,7 @@ function cp() {{
 </body>
 </html>
         """,
-        height=720,
+        height=810,
         scrolling=False,
     )
 
