@@ -681,6 +681,10 @@ def calc_stats(prices: pd.DataFrame) -> dict:
     cum_all_norm    = (1 + monthly_all).cumprod()
     dd_series_all   = (cum_all_norm - cum_all_norm.cummax()) / cum_all_norm.cummax() * 100
 
+    # SPY buy-and-hold drawdown series (same months) — the risk story
+    spy_cum_norm    = (1 + spy_ret_all.fillna(0)).cumprod()
+    spy_dd_series   = (spy_cum_norm - spy_cum_norm.cummax()) / spy_cum_norm.cummax() * 100
+
     # Anchor charts at Jan 1 of PERF_YEAR_START so the X-axis visually starts there.
     # The first valid signal_return is delayed by the 12M lookback (BIL inception 2007-05
     # → first usable signal May 2008 → first return June 2008). For the months before
@@ -702,6 +706,7 @@ def calc_stats(prices: pd.DataFrame) -> dict:
     cum_all = _anchor(cum_all, 10000.0)
     spy_cum_all = _anchor(spy_cum_all, 10000.0)
     dd_series_all = _anchor(dd_series_all, 0.0)
+    spy_dd_series = _anchor(spy_dd_series, 0.0)
 
     # Longest consecutive months underwater (KPI period)
     max_dd_months = 0
@@ -740,6 +745,7 @@ def calc_stats(prices: pd.DataFrame) -> dict:
         "cumulative":      cum_all,        # strategy full-history for growth curve
         "spy_cumulative":  spy_cum_all,    # SPY buy-and-hold for comparison
         "drawdown_series": dd_series_all,  # full-history % drawdown for underwater chart
+        "spy_drawdown_series": spy_dd_series,  # SPY B&H drawdown, same months
         "max_dd_months":   max_dd_months,  # longest consecutive months underwater (KPI period)
         "sharpe":          sharpe,
         "sortino":         sortino,
@@ -1547,16 +1553,37 @@ def render_cumulative_chart(stats: dict):
 
 
 def render_drawdown_chart(stats: dict):
-    """Underwater chart: drawdown % over full history, red fill below zero."""
+    """Underwater chart: strategy drawdown (red fill) vs SPY B&H drawdown
+    (grey dashed) — the honest risk story: 唔係賺得最多，係跌得最少."""
     dd = stats.get("drawdown_series")
     if dd is None or dd.empty:
         return
 
     mdd_val = stats.get("mdd", 0) * 100   # convert to % for reference line
+    spy_dd = stats.get("spy_drawdown_series")
 
     fig = go.Figure()
 
-    # Red fill area
+    # SPY B&H drawdown (behind, grey dashed) — the comparison baseline
+    if spy_dd is not None and not spy_dd.empty:
+        spy_mdd = float(spy_dd.min())
+        fig.add_trace(go.Scatter(
+            x=spy_dd.index,
+            y=spy_dd.values,
+            mode="lines",
+            line=dict(color="#64748b", width=1.2, dash="dot"),
+            name="SPY 買入持有回撤",
+            hovertemplate="%{x|%Y-%m}  SPY <b>%{y:.1f}%</b><extra></extra>",
+        ))
+        fig.add_hline(
+            y=spy_mdd,
+            line=dict(color="#64748b", width=1, dash="dot"),
+            annotation_text=f"SPY MDD {spy_mdd:.1f}%",
+            annotation_position="bottom left",
+            annotation_font=dict(color="#64748b", size=10),
+        )
+
+    # Strategy drawdown — red fill area (on top)
     fig.add_trace(go.Scatter(
         x=dd.index,
         y=dd.values,
@@ -1564,15 +1591,15 @@ def render_drawdown_chart(stats: dict):
         fill="tozeroy",
         line=dict(color="#f87171", width=1.2),
         fillcolor="rgba(248,113,113,0.15)",
-        name="回撤深度",
-        hovertemplate="%{x|%Y-%m}  <b>%{y:.1f}%</b><extra></extra>",
+        name="FRM 策略回撤",
+        hovertemplate="%{x|%Y-%m}  FRM <b>%{y:.1f}%</b><extra></extra>",
     ))
 
     # Horizontal MDD reference line
     fig.add_hline(
         y=mdd_val,
         line=dict(color="#f87171", width=1, dash="dot"),
-        annotation_text=f"MDD {mdd_val:.1f}%",
+        annotation_text=f"FRM MDD {mdd_val:.1f}%",
         annotation_position="bottom right",
         annotation_font=dict(color="#f87171", size=10),
     )
@@ -1580,7 +1607,7 @@ def render_drawdown_chart(stats: dict):
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        height=150,
+        height=230,
         margin=dict(l=0, r=0, t=4, b=0),
         xaxis=dict(showgrid=False, tickfont=dict(color="#64748b", size=10)),
         yaxis=dict(
@@ -1591,7 +1618,12 @@ def render_drawdown_chart(stats: dict):
             autorange="reversed",   # negative values grow downward
         ),
         hovermode="x unified",
-        showlegend=False,
+        showlegend=True,
+        legend=dict(
+            orientation="h", yanchor="top", y=1.18, x=0,
+            font=dict(color="#94a3b8", size=11),
+            bgcolor="rgba(0,0,0,0)",
+        ),
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
