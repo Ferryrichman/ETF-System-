@@ -1177,6 +1177,97 @@ function cp() {{
     )
 
 
+def render_dca_simulator(stats: dict):
+    """Simulate monthly DCA into the strategy — value curve vs contributions."""
+    monthly = stats.get("monthly")
+    if monthly is None or len(monthly) < 12:
+        st.info("數據不足，無法模擬定投。")
+        return
+
+    amt = st.number_input(
+        "每月定投金額 (USD)", min_value=100, max_value=100000,
+        value=1000, step=100, key="dca_amt",
+        help="每月第一個交易日以開市價投入，跟足策略訊號",
+    )
+
+    vals, invs = [], []
+    v = inv = 0.0
+    for r in monthly.values:
+        v = (v + amt) * (1 + r)
+        inv += amt
+        vals.append(v)
+        invs.append(inv)
+    val_s = pd.Series(vals, index=monthly.index)
+    inv_s = pd.Series(invs, index=monthly.index)
+
+    final = float(val_s.iloc[-1])
+    total_inv = float(inv_s.iloc[-1])
+    profit = final - total_inv
+
+    # Money-weighted annualized return (IRR, bisection)
+    n = len(vals)
+    lo, hi = -0.05, 0.05
+    for _ in range(80):
+        mid = (lo + hi) / 2
+        fv = sum(amt * (1 + mid) ** (n - i) for i in range(n))
+        if fv < final:
+            lo = mid
+        else:
+            hi = mid
+    irr = (1 + (lo + hi) / 2) ** 12 - 1
+
+    peak = val_s.cummax()
+    max_dd = float(((val_s - peak) / peak).min())
+    under_months = int((val_s < inv_s).sum())
+
+    kpi = """background:#111827; border:1px solid #1e293b; border-radius:14px;
+             padding:14px 10px; text-align:center;"""
+    c1, c2, c3, c4, c5 = st.columns(5)
+    cells = [
+        (c1, f"${total_inv:,.0f}", "總投入", "#94a3b8"),
+        (c2, f"${final:,.0f}", "最終市值", "#818cf8"),
+        (c3, f"${profit:+,.0f}", "總利潤", "#4ade80" if profit >= 0 else "#f87171"),
+        (c4, f"{irr*100:.1f}%", "IRR 年化", "#4ade80" if irr >= 0 else "#f87171"),
+        (c5, f"{max_dd*100:.1f}%", "市值最大回撤", "#fb923c"),
+    ]
+    for col, val, label, color in cells:
+        with col:
+            st.markdown(
+                f'<div style="{kpi}">'
+                f'<div style="font-size:20px;font-weight:900;color:{color};letter-spacing:-0.5px;">{val}</div>'
+                f'<div style="font-size:10px;color:#475569;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:5px;">{label}</div>'
+                f'</div>', unsafe_allow_html=True)
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=val_s.index, y=val_s.values, name="定投帳戶市值",
+        line=dict(color="#818cf8", width=2.5),
+        fill="tozeroy", fillcolor="rgba(99,102,241,0.12)",
+        hovertemplate="%{x|%Y-%m}<br>市值 $%{y:,.0f}<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=inv_s.index, y=inv_s.values, name="累積投入",
+        line=dict(color="#64748b", width=1.5, dash="dash"),
+        hovertemplate="%{x|%Y-%m}<br>已投入 $%{y:,.0f}<extra></extra>",
+    ))
+    fig.update_layout(
+        height=420, margin=dict(l=10, r=10, t=30, b=10),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#94a3b8", size=12),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+        xaxis=dict(gridcolor="#1e293b"),
+        yaxis=dict(gridcolor="#1e293b", tickprefix="$", tickformat=",.0f"),
+        hovermode="x unified",
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    st.caption(
+        f"模擬：每月第一個交易日以開市價投入 ${amt:,.0f}，完全跟隨策略訊號。"
+        f"全期 {n} 個月，市值低於已投入本金嘅月份僅 {under_months} 個。"
+        "過往表現不代表將來回報。"
+    )
+
+
 def render_price_ladder(info: dict):
     """Prominent banner: YTD-linked price ladder + grandfathering + referral CTA."""
     ytd = info.get("ytd_ret")
@@ -2151,12 +2242,14 @@ def main():
     section_header("📈", "歷史績效")
     render_kpis(stats)
 
-    tab1, tab2, tab3 = st.tabs(["  年度回報  ", "  增長曲線  ", "  持倉記錄  "])
+    tab1, tab2, tab3, tab4 = st.tabs(["  年度回報  ", "  增長曲線  ", "  定投模擬  ", "  持倉記錄  "])
     with tab1:
         render_annual_chart(annual)
     with tab2:
         render_cumulative_chart(stats)
     with tab3:
+        render_dca_simulator(stats)
+    with tab4:
         render_allocation_heatmap(prices)
 
     section_header("🔢", "動力計算明細")
