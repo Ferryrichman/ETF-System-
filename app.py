@@ -572,7 +572,10 @@ def get_current_info(prices: pd.DataFrame) -> dict:
     prev_sig = prices.loc[prev_row, "signal"]
     last_ret = prices.loc[cur_row,  "signal_return"]
 
-    # Fallback: if next month's open isn't available yet, use close/open for the month
+    # Fallback: if next month's open isn't available yet, use close/open for
+    # the month. Marked provisional — the official open-to-open figure
+    # replaces it automatically once the new month's first open exists.
+    last_ret_prov = False
     if np.isnan(last_ret) if isinstance(last_ret, float) else pd.isna(last_ret):
         try:
             h = prev_sig
@@ -580,6 +583,7 @@ def get_current_info(prices: pd.DataFrame) -> dict:
             c = prices.loc[cur_row, h]
             if pd.notna(o) and pd.notna(c) and o != 0:
                 last_ret = c / o - 1
+                last_ret_prov = True
         except Exception:
             pass
 
@@ -602,6 +606,7 @@ def get_current_info(prices: pd.DataFrame) -> dict:
         "prev":         prev_sig,
         "changed":      cur_sig != prev_sig,
         "last_ret":     float(last_ret) if not np.isnan(last_ret) else None,
+        "last_ret_prov": last_ret_prov,
         "ytd_ret":      ytd_ret,
         "mtd_ret":      mtd_ret,
         "scores":       scores,
@@ -830,6 +835,7 @@ def render_signal_card(info: dict):
         )
 
     # Return badge
+    prov_tag = "(暫定)" if info.get("last_ret_prov") else ""
     if last_ret is not None:
         pct   = f"{last_ret*100:+.2f}%"
         r_bg  = "#052e16" if last_ret >= 0 else "#450a0a"
@@ -837,7 +843,7 @@ def render_signal_card(info: dict):
         arrow = "↑" if last_ret >= 0 else "↓"
         ret_html = (
             f'<span class="badge" style="background:{r_bg};color:{r_clr};">'
-            f'{arrow} 上月回報 {pct}</span>'
+            f'{arrow} 上月回報{prov_tag} {pct}</span>'
         )
     else:
         ret_html = ""
@@ -994,6 +1000,8 @@ def render_whatsapp_section(info: dict, stats: dict):
     month_str = f"{now.month}月{now.year}"
 
     ret_str = f"{last_ret*100:.2f}%" if last_ret is not None else "N/A"
+    if last_ret is not None and info.get("last_ret_prov"):
+        ret_str += "（暫定，開市後更新）"
     mtd_str = f"{mtd_ret*100:+.2f}%" if mtd_ret is not None else "N/A"
     ytd_str = f"{ytd_ret*100:+.2f}%" if ytd_ret is not None else "N/A"
 
