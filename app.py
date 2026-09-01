@@ -13,6 +13,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timezone, timedelta
 from dateutil.relativedelta import relativedelta
+from dateutil.easter import easter
 import plotly.graph_objects as go
 import time
 import warnings
@@ -34,6 +35,44 @@ def _hk_date_key() -> str:
     Shifting the day boundary to HKT 07:00 (= 7-hour offset) ensures every fresh
     fetch sees the completed prior US session, year-round (covers both EDT/EST)."""
     return (datetime.now(_HK_TZ) - timedelta(hours=7)).strftime("%Y-%m-%d")
+
+
+# Throttle state for the completeness guard's cache clear (process-wide)
+_GUARD_CLEAR_STATE = {"t": 0.0}
+
+
+def _final_bar_cutoff():
+    """Latest US session date whose bar is FINAL (closed + ingested).
+
+    A daily bar dated D is only final after ~HKT 05:00 on D+1 (US close
+    04:00/05:00 HKT + ingest). Mirror the cache key: within one cache-key
+    day, only bars strictly BEFORE the key date count. This drops the
+    in-progress live bar that Yahoo serves during US trading hours
+    (HKT 21:30-05:00), which would otherwise be treated as a final close
+    by the monthly resample and the momentum scores."""
+    return (datetime.now(_HK_TZ) - timedelta(hours=7)).date()
+
+
+def _skip_non_trading(d):
+    """Advance datetime d past weekends and month-boundary-relevant US
+    holidays (Good Friday, Memorial Day, New Year's Day, Labor Day)."""
+    while True:
+        if d.weekday() >= 5:
+            d += timedelta(days=1)
+            continue
+        if d.month == 1 and d.day == 1:                                  # New Year's Day
+            d += timedelta(days=1)
+            continue
+        if d.month == 5 and d.weekday() == 0 and d.day >= 25:            # Memorial Day
+            d += timedelta(days=1)
+            continue
+        if d.month == 9 and d.weekday() == 0 and d.day <= 7:             # Labor Day
+            d += timedelta(days=1)
+            continue
+        if d.date() == easter(d.year) - timedelta(days=2):               # Good Friday
+            d += timedelta(days=1)
+            continue
+        return d
 
 # ══════════════════════════════════════════════════════════
 #  CONSTANTS
@@ -256,9 +295,7 @@ def render_rebalance_notice(info: dict):
 
     next_first = (now.replace(day=1) + timedelta(days=32)).replace(day=1)
     next_naive = next_first.replace(tzinfo=None) if next_first.tzinfo else next_first
-    rebal = next_naive
-    while rebal.weekday() >= 5:
-        rebal += timedelta(days=1)
+    rebal = _skip_non_trading(next_naive)
 
     now_naive = now.replace(tzinfo=None) if now.tzinfo else now
     days_left = (rebal - now_naive).days
@@ -382,9 +419,14 @@ def load_prices(date_key: str = "") -> pd.DataFrame:
     close_frames = {}   # month-end close  (signal)
     open_frames  = {}   # month-start open (trade price)
 
+    cutoff = _final_bar_cutoff()
     last_dates = []
     for t in TICKERS:
         daily = _get_daily_ohlc(t, start, end)
+        if not daily.empty:
+            # Drop the in-progress live bar during US trading hours —
+            # only bars strictly before the cache-key date are final
+            daily = daily[daily.index.date < cutoff]
         if daily.empty or daily["Close"].dropna().empty:
             st.error(
                 f"⚠️ 無法從 Yahoo Finance 下載 **{t}** 數據。\n\n"
@@ -427,14 +469,9 @@ def _prev_month_data_incomplete(last_daily_str: str) -> bool:
         prev_month_end = (now_hk.replace(day=1) - timedelta(days=1)).date()
         if last_daily.date() >= prev_month_end:
             return False
-        d = last_daily + timedelta(days=1)
-        while d.weekday() >= 5:
-            d += timedelta(days=1)
-        # Memorial Day (last Monday of May) is a US holiday, not missing data
-        if d.month == 5 and d.weekday() == 0 and d.day >= 25:
-            d += timedelta(days=1)
-            while d.weekday() >= 5:
-                d += timedelta(days=1)
+        # Next expected US trading day after our last bar (skips weekends
+        # + Good Friday / Memorial Day / New Year / Labor Day)
+        d = _skip_non_trading(last_daily + timedelta(days=1))
         return d.date() <= prev_month_end
     except Exception:
         return False
@@ -557,7 +594,8 @@ def get_current_info(prices: pd.DataFrame) -> dict:
     ytd_ret = float((1 + ytd_months).prod() - 1) if len(ytd_months) > 0 else None
 
     # MTD return — daily data for current holding
-    mtd_ret = _get_mtd_return(cur_sig, _hk_date_key())
+    mtd_ret = _get_mtd_return(cur_sig, _hk_date_key(),
+                              datetime.now(_HK_TZ).strftime("%Y-%m"))
 
     return {
         "current":      cur_sig,
@@ -574,15 +612,20 @@ def get_current_info(prices: pd.DataFrame) -> dict:
 
 
 @st.cache_data(show_spinner=False)
-def _get_mtd_return(sig: str, date_key: str = ""):
-    """MTD return using daily prices for current holding."""
+def _get_mtd_return(sig: str, date_key: str = "", month_key: str = ""):
+    """MTD return using daily prices for current holding.
+
+    month_key (HKT %Y-%m) is part of the cache key so a value cached late
+    on the last day of a month can never be served as the NEW month's MTD
+    during the HKT 00:00-07:00 window before date_key rolls."""
     try:
         # HKT, not server UTC — keeps the month filter aligned with the
         # signal month shown in the UI (server is 8h behind HK)
         today = datetime.now(_HK_TZ).replace(tzinfo=None)
         month_start = today.replace(day=1) - timedelta(days=1)
+        cutoff = _final_bar_cutoff()
         daily = _get_daily_ohlc(sig, month_start, today + timedelta(days=1))
-        daily = daily[daily.index.month == today.month]
+        daily = daily[(daily.index.month == today.month) & (daily.index.date < cutoff)]
         if daily.empty:
             return None
         first_open = float(daily["Open"].iloc[0])
@@ -957,7 +1000,11 @@ def render_whatsapp_section(info: dict, stats: dict):
     # Date ranges for each figure
     data_dt = info["data_date"]          # month-end of last completed month
     prev_range = f"{data_dt.month}月1日–{data_dt.month}月{data_dt.day}日"
-    ytd_range  = f"1月1日–{data_dt.month}月{data_dt.day}日"
+    if data_dt.year != now.year:
+        # January: the "YTD" is actually LAST year's full-year figure
+        ytd_range = f"{data_dt.year}年全年"
+    else:
+        ytd_range = f"1月1日–{data_dt.month}月{data_dt.day}日"
     mtd_range  = ""
     last_daily = info.get("last_daily", "")
     if mtd_ret is not None and last_daily:
@@ -1084,8 +1131,8 @@ def render_whatsapp_section(info: dict, stats: dict):
 >{html_enc}</textarea>
 
 <div class="lbl">📱 WhatsApp 訊息</div>
+<button class="btn" id="b" onclick="cp()" style="margin-bottom:14px;">📋 一鍵複製</button>
 <div class="msg">{html_display}</div>
-<button class="btn" id="b" onclick="cp()">📋 一鍵複製</button>
 
 <script>
 function cp() {{
@@ -1100,8 +1147,14 @@ function cp() {{
   function fall() {{
     ta.style.cssText = 'position:static;width:100%;height:60px;opacity:1;pointer-events:auto;margin-bottom:8px;';
     ta.select(); ta.setSelectionRange(0, 99999);
-    try {{ document.execCommand('copy'); done(); }} catch(e) {{}}
-    ta.style.cssText = 'position:absolute;left:-9999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none;';
+    var ok = false;
+    try {{ ok = document.execCommand('copy'); }} catch(e) {{}}
+    if (ok) {{
+      done();
+      ta.style.cssText = 'position:absolute;left:-9999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none;';
+    }} else {{
+      b.innerHTML = '⚠️ 自動複製失敗，請長按下面文字自行複製';
+    }}
   }}
   if (navigator.clipboard && window.isSecureContext) {{
     navigator.clipboard.writeText(txt).then(done, fall);
@@ -1112,7 +1165,7 @@ function cp() {{
 </html>
         """,
         height=810,
-        scrolling=False,
+        scrolling=True,
     )
 
 
@@ -1122,6 +1175,12 @@ def render_price_ladder(info: dict):
     if ytd is None:
         return
     ytd_pct = ytd * 100
+    # In January the figure is last year's full-year return — label it so
+    data_dt = info.get("data_date")
+    now = info.get("now")
+    ytd_label = "現時 YTD"
+    if data_dt is not None and now is not None and data_dt.year != now.year:
+        ytd_label = f"{data_dt.year} 全年"
     hikes = max(0, int(ytd_pct // 10))
     next_trigger = (hikes + 1) * 10
     prog = max(0.0, min(1.0, (ytd_pct - hikes * 10) / 10.0)) if ytd_pct > 0 else 0.0
@@ -1138,7 +1197,7 @@ def render_price_ladder(info: dict):
         '</div>'
         '<div style="display:flex;gap:26px;text-align:center;">'
         f'<div><div style="font-size:26px;font-weight:900;color:{ytd_clr};">{ytd_pct:+.1f}%</div>'
-        '<div style="font-size:10px;color:#64748b;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:3px;">現時 YTD</div></div>'
+        f'<div style="font-size:10px;color:#64748b;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:3px;">{ytd_label}</div></div>'
         f'<div><div style="font-size:26px;font-weight:900;color:#818cf8;">{hikes} 次</div>'
         '<div style="font-size:10px;color:#64748b;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-top:3px;">已觸發加價</div></div>'
         '</div></div>'
@@ -1603,7 +1662,7 @@ def render_disclaimer():
 
 
 def render_footer():
-    year = datetime.today().year
+    year = datetime.now(_HK_TZ).year
     st.markdown(
         f"""
 <div style="text-align:center; padding:32px 0 12px;">
@@ -2037,15 +2096,20 @@ def main():
         prices = load_prices(date_key=_hk_date_key())
 
         # Completeness guard: if the just-completed month is missing its final
-        # trading day (Yahoo ingest lag), warn AND drop the cache so the next
+        # trading day (Yahoo ingest lag), warn AND drop the cache so a later
         # reload refetches instead of serving the incomplete data all day.
+        # Throttled to one clear per 10 min so a guard misfire cannot turn
+        # every page load into a full refetch (Yahoo rate limits).
         _last_daily = getattr(prices, "attrs", {}).get("last_daily_date", "")
         if _prev_month_data_incomplete(_last_daily):
             st.warning(
                 f"\u26a0\ufe0f \u6578\u64da\u6e90\u5c1a\u672a\u66f4\u65b0\u4e0a\u6708\u6700\u5f8c\u4ea4\u6613\u65e5\uff08\u76ee\u524d\u6578\u64da\u622a\u81f3 {_last_daily}\uff09\u3002"
                 "\u672c\u6708\u8a0a\u865f\u5f85\u6578\u64da\u66f4\u65b0\u5f8c\u6700\u7d42\u78ba\u8a8d \u2014 \u8acb 15-30 \u5206\u9418\u5f8c\u91cd\u65b0\u6574\u7406\u9801\u9762\uff08F5\uff09\u3002"
             )
-            load_prices.clear()
+            _now_ts = time.time()
+            if _now_ts - _GUARD_CLEAR_STATE.get("t", 0.0) > 600:
+                load_prices.clear()
+                _GUARD_CLEAR_STATE["t"] = _now_ts
 
         prices = compute_signals(prices)
 
