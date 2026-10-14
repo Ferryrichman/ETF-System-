@@ -757,7 +757,10 @@ def calc_stats(prices: pd.DataFrame) -> dict:
         n = len(sub) / 12
         return float((1 + r) ** (1 / n) - 1) if n > 0 else None
 
-    changes = int((prices["signal"] != prices["signal"].shift(1)).sum())
+    # Count real switches only: drop NaN signals first (NaN != NaN would count
+    # every warm-up month as a "trade"), and skip the initial entry.
+    _sig = prices["signal"].dropna()
+    changes = int((_sig != _sig.shift(1)).iloc[1:].sum())
 
     return {
         "cagr":            cagr,
