@@ -602,8 +602,9 @@ def get_current_info(prices: pd.DataFrame) -> dict:
     ytd_ret = float((1 + ytd_months).prod() - 1) if len(ytd_months) > 0 else None
 
     # MTD return — daily data for current holding
-    mtd_ret = _get_mtd_return(cur_sig, _hk_date_key(),
-                              datetime.now(_HK_TZ).strftime("%Y-%m"))
+    month_key = datetime.now(_HK_TZ).strftime("%Y-%m")
+    mtd_ret = _get_mtd_return(cur_sig, _hk_date_key(), month_key)
+    mtd_start, mtd_end = _get_mtd_window(cur_sig, _hk_date_key(), month_key)
 
     return {
         "current":      cur_sig,
@@ -613,6 +614,8 @@ def get_current_info(prices: pd.DataFrame) -> dict:
         "last_ret_prov": last_ret_prov,
         "ytd_ret":      ytd_ret,
         "mtd_ret":      mtd_ret,
+        "mtd_start":    mtd_start,   # first trading day of MTD window (its OPEN = entry)
+        "mtd_end":      mtd_end,     # last daily bar used for MTD (its CLOSE = latest)
         "scores":       scores,
         "data_date":    cur_row,
         "last_daily":   getattr(prices, "attrs", {}).get("last_daily_date", ""),
@@ -644,6 +647,28 @@ def _get_mtd_return(sig: str, date_key: str = "", month_key: str = ""):
         return last_close / first_open - 1
     except Exception:
         return None
+
+
+@st.cache_data(show_spinner=False)
+def _get_mtd_window(sig: str, date_key: str = "", month_key: str = ""):
+    """MTD window (start/end dates) for the current holding.
+
+    Mirrors _get_mtd_return's daily filtering exactly, so the returned range is
+    the same window whose open→close produced the MTD figure. Used only for the
+    signal card's date-range label; the return VALUE stays in _get_mtd_return.
+
+    Returns (start_date, end_date) Timestamps, or (None, None)."""
+    try:
+        today = datetime.now(_HK_TZ).replace(tzinfo=None)
+        month_start = today.replace(day=1) - timedelta(days=1)
+        cutoff = _final_bar_cutoff()
+        daily = _get_daily_ohlc(sig, month_start, today + timedelta(days=1))
+        daily = daily[(daily.index.month == today.month) & (daily.index.date < cutoff)]
+        if daily.empty:
+            return None, None
+        return daily.index[0], daily.index[-1]
+    except Exception:
+        return None, None
 
 
 def calc_stats(prices: pd.DataFrame) -> dict:
@@ -872,17 +897,30 @@ def render_signal_card(info: dict):
         ytd_html = ""
 
     # MTD badge
-    mtd_ret = info.get("mtd_ret")
+    mtd_ret   = info.get("mtd_ret")
+    mtd_start = info.get("mtd_start")
+    mtd_end   = info.get("mtd_end")
     if mtd_ret is not None:
         mtd_pct = f"{mtd_ret*100:+.1f}%"
         m_clr = "#4ade80" if mtd_ret >= 0 else "#f87171"
         m_bg = "#052e16" if mtd_ret >= 0 else "#450a0a"
+        mtd_range = (
+            f"（{mtd_start.month}/{mtd_start.day} 開市價→{mtd_end.month}/{mtd_end.day} 收市價）"
+            if mtd_start is not None and mtd_end is not None else ""
+        )
         mtd_html = (
             f'<span class="badge" style="background:{m_bg};color:{m_clr};">'
-            f'📊 MTD {mtd_pct}</span>'
+            f'📊 MTD {mtd_pct}{mtd_range}</span>'
         )
     else:
         mtd_html = ""
+
+    # Timeline label — signal uses last month-end close; MTD/holding uses latest daily close
+    if mtd_end is not None:
+        perf_str = f"MTD／持倉表現：更新至 {mtd_end.month}月{mtd_end.day}日 收市"
+    else:
+        perf_str = "MTD／持倉表現：本月暫未有收市數據"
+    timeline_str = f"訊號計算：{data_str} 月底收市價&nbsp;&nbsp;·&nbsp;&nbsp;{perf_str}"
 
     # Use components.html so HTML always renders correctly regardless of Streamlit version
     components.html(
@@ -916,7 +954,7 @@ def render_signal_card(info: dict):
   }}
   .label {{ font-size:12px; color:#64748b; font-weight:800;
              text-transform:uppercase; letter-spacing:2px; margin-bottom:5px; }}
-  .date  {{ font-size:12px; color:#475569; }}
+  .date  {{ font-size:12px; color:#475569; line-height:1.5; max-width:340px; }}
   .badges {{ display:grid; grid-template-columns:auto auto; gap:6px; justify-items:end; }}
   .badge {{
     display:inline-flex; align-items:center; gap:4px;
@@ -939,7 +977,7 @@ def render_signal_card(info: dict):
   <div class="top-row">
     <div>
       <div class="label">{month_str} 訊號</div>
-      <div class="date">數據截至 {data_str}</div>
+      <div class="date">{timeline_str}</div>
     </div>
     <div class="badges">
       {change_html}
@@ -959,7 +997,7 @@ def render_signal_card(info: dict):
 </body>
 </html>
         """,
-        height=230,
+        height=270,
         scrolling=False,
     )
 
