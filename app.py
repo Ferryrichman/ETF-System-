@@ -1106,7 +1106,7 @@ def render_whatsapp_section(info: dict, stats: dict):
         f"📅 YTD（{ytd_range}）：{ytd_str}\n"
         f"\n"
         f"📅 執行時間：本月第一個交易日\n"
-        f"⏰ 美股開市後任何時間均可執行\n"
+        f"⏰ 建議於美股開市後盡快執行（回測以開市價計）\n"
         f"\n"
         f"回測CAGR：{stats['cagr']*100:.1f}% {bt_period}  |  MDD：{stats['mdd']*100:.1f}%\n"
         f"Sharpe：{sharpe_str}  |  Sortino：{sortino_str}\n"
@@ -1120,7 +1120,7 @@ def render_whatsapp_section(info: dict, stats: dict):
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"@FRM ETF Standard · FerryRichMan Limited\n"
         f"🌐 ferryrichman.com\n"
-        f"（不構成任何投資建議）"
+        f"（回測及過往表現不代表將來，只供教學及記錄用途，不構成任何投資建議）"
     )
 
     # HTML-encode for display div and hidden textarea
