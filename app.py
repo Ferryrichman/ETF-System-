@@ -20,7 +20,7 @@ import warnings
 warnings.filterwarnings("ignore")
 import uuid
 import urllib.parse
-from academic_validation_ui import render_academic_validation
+from academic_validation_ui import render_academic_validation, _load_json as _load_validation_json
 
 # Hong Kong timezone (UTC+8) — no external dependency
 _HK_TZ = timezone(timedelta(hours=8))
@@ -1834,6 +1834,44 @@ def render_disclaimer():
     )
 
 
+def render_supplementary_disclosure(json_path: str = "validation_basic.json"):
+    """補充披露 — backtest limitations (figures from the 2026-10-13 independent audit)."""
+    try:
+        dsr_v = float(_load_validation_json(json_path)["deflated_sharpe"]["deflated_sharpe"])
+        dsr_txt = f"{dsr_v:.3f}"
+    except Exception:
+        dsr_txt = "—"
+    li = 'style="margin-bottom:6px;"'
+    st.markdown(
+        f"""
+<div style="
+    background: #0d1424;
+    border: 1px solid #1e293b;
+    border-radius: 14px;
+    padding: 20px 24px;
+    margin-top: 28px;
+">
+    <div style="font-size:10px;color:#6366f1;font-weight:800;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:10px;">
+        補充披露 · Backtest Limitations
+    </div>
+    <ul style="font-size:12px;color:#94a3b8;line-height:1.7;margin:0 0 8px 18px;padding:0;">
+        <li {li}><b style="color:#cbd5e1;">Sharpe 計法</b>：頁面 Sharpe 以無風險利率 0% 計；如改用 BIL（短期國庫券）做基準，Sharpe 約 0.75。</li>
+        <li {li}><b style="color:#cbd5e1;">未扣成本及稅</b>：回測未扣交易成本，亦未扣港人持有美股 ETF 嘅 30% 股息預扣稅；估計扣除後每年回報再低約 1 個百分點。</li>
+        <li {li}><b style="color:#cbd5e1;">訊號日敏感度</b>：同一套規則如果改喺每月第 1–5 個交易日執行，回測 CAGR 約 8.4%–11.6%、最大回撤約 −16% 至 −26%；喺呢個測試入面，頁面採用嘅第 1 個交易日剛好係 5 個執行日之中結果最好嘅一個，所以實際執行結果可以明顯差過頁面數字。</li>
+        <li {li}><b style="color:#cbd5e1;">參數試錯校正</b>：Deflated Sharpe = {dsr_txt}，未達 0.95 門檻，即係經參數試錯校正後，統計上唔可以排除運氣成分。</li>
+        <li {li}><b style="color:#cbd5e1;">Momentum crash 風險</b>：動力策略喺市況急速反轉時（例如急跌後急彈）可以出現較大虧損，每月先換倉一次會慢半拍。</li>
+        <li {li}><b style="color:#cbd5e1;">同 SPY 比較</b>：以滾動 3 年計，本策略約 8 成時間跑輸長期持有 SPY。呢個係策略設計嘅取捨——市況差時轉去避險資產（BIL）以減少回撤，代價係牛市時通常追唔上大市。</li>
+        <li {li}><b style="color:#cbd5e1;">回測期限制</b>：回測期 2008–2026 未涵蓋一個完整嘅長期熊市（secular bear market）。</li>
+    </ul>
+    <p style="font-size:11px;color:#64748b;line-height:1.7;margin:0;">
+        以上數字為約數，出自 2026-10-13 獨立回測審計。本系統只供教學及記錄用途，不構成任何投資建議；回測及過往表現不代表將來。
+    </p>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_footer():
     year = datetime.now(_HK_TZ).year
     st.markdown(
@@ -2336,6 +2374,7 @@ def main():
     section_header("🎓", "學術級驗證 · Academic-Grade Validation")
     render_academic_validation("validation_basic.json")
 
+    render_supplementary_disclosure("validation_basic.json")
     render_disclaimer()
     render_footer()
 
