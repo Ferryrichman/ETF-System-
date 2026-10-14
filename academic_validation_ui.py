@@ -33,17 +33,48 @@ def _check_or_x(passed: bool) -> str:
 
 
 def _commentary_box(verdict: str, color: str, body_html: str) -> str:
-    """Reusable 評語 box. verdict = 強/中/弱/警示."""
-    icons = {"強": "💪", "中強": "👍", "中": "🤔", "弱": "⚠️", "警示": "🚨"}
+    """Reusable 評語 box. verdict = 強/中強/中/需留意/弱/警示."""
+    icons = {"強": "💪", "中強": "👍", "中": "🤔", "需留意": "🔎", "弱": "⚠️", "警示": "🚨"}
     icon = icons.get(verdict, "📝")
+    title = "需留意" if verdict == "需留意" else f"信心{verdict}"
     return (
         f'<div style="background:rgba({color}, 0.08); border-left:3px solid rgb({color});'
         f'border-radius:0 8px 8px 0; padding:12px 16px; margin:10px 0 18px;">'
         f'<div style="font-size:12px;color:rgb({color});font-weight:800;margin-bottom:6px;">'
-        f'{icon} 評語：信心{verdict}</div>'
+        f'{icon} 評語：{title}</div>'
         f'<div style="font-size:13px;color:#cbd5e1;line-height:1.7;">{body_html}</div>'
         f'</div>'
     )
+
+
+def _cap_verdict(verdict: str, color: str, capped: bool):
+    """If any strict red flag exists (see _red_flags), no section may be
+    labelled 信心強 / 中強 — cap at 中 so the label follows objective results."""
+    if capped and verdict in ("強", "中強"):
+        return "中", "251, 191, 36"
+    return verdict, color
+
+
+def _red_flags(v: dict) -> list:
+    """Objective red flags from the validation JSON. Any one present →
+    no commentary box may be labelled 信心強."""
+    flags = []
+    dsr = v.get("deflated_sharpe", {})
+    if dsr.get("deflated_sharpe", 1) < 0.95:
+        flags.append(f"Deflated Sharpe {dsr.get('deflated_sharpe', 0):.3f} 未達 0.95")
+    corr = v.get("walk_forward", {}).get("train_oos_sharpe_correlation")
+    if corr is not None and corr < 0:
+        flags.append(f"walk-forward 相關係數 {corr:+.3f} &lt; 0")
+    oos = v.get("out_of_sample", {})
+    try:
+        if oos["out_of_sample"]["sharpe"] < oos["in_sample"]["sharpe"]:
+            flags.append("樣本外 Sharpe 低過設計期（退化）")
+    except (KeyError, TypeError):
+        pass
+    stress = v.get("stress_periods", {})
+    if stress and sum(1 for s in stress.values() if s.get("total_return", 0) > 0) == 0:
+        flags.append(f"{len(stress)} 個危機期間 0 次正回報")
+    return flags
 
 
 def _section_title(num: int, cn: str, en: str) -> str:
@@ -59,7 +90,7 @@ def _section_title(num: int, cn: str, en: str) -> str:
 # ════════════════════════════════════════════════════════════
 # COMMENTARY GENERATORS — 根據實際數值動態生成評語
 # ════════════════════════════════════════════════════════════
-def comment_metrics(m: dict) -> str:
+def comment_metrics(m: dict, capped: bool = False) -> str:
     sharpe = m["sharpe"]; sortino = m["sortino"]
     pf = m["profit_factor"]; calmar = m["calmar"]; win_rate = m["win_rate"]
 
@@ -68,22 +99,25 @@ def comment_metrics(m: dict) -> str:
     if pass_count >= 5: verdict, color = "強", "74, 222, 128"
     elif pass_count >= 3: verdict, color = "中強", "251, 191, 36"
     else: verdict, color = "中", "251, 191, 36"
+    verdict, color = _cap_verdict(verdict, color, capped)
 
     body = (
         f"<b>Sharpe {sharpe:.2f}</b>：每承擔 1 單位波動換 <b>{sharpe:.2f}</b> 單位風險溢價。"
-        f"{'>0.75 屬於優秀水平，超越大部分公開發表嘅主動策略。' if sharpe >= 0.75 else '達 0.5-0.75 屬中等，可接受但有改善空間。'}<br>"
+        f"{'高於 0.75 參考門檻（以無風險利率 0% 計）。' if sharpe >= 0.75 else '介乎 0.5-0.75 屬中等（以無風險利率 0% 計）。'}<br>"
         f"<b>Sortino {sortino:.2f}</b>：只計「壞月」波動嘅版本，"
         f"{'>1.0 反映策略對下行風險控制良好。' if sortino >= 1.0 else '介乎 0.7-1.0，下行風險中等。'}<br>"
         f"<b>Profit Factor {pf:.2f}</b>：贏錢月份嘅總和係輸錢月份嘅 <b>{pf:.2f}</b> 倍。"
         f"{'>1.5 屬健康嘅 trading system 標準。' if pf >= 1.5 else '>1.0 仍然 net positive，但邊際細。'}<br>"
         f"<b>Calmar {calmar:.2f}</b>：年化回報相對最大回撤嘅 <b>{calmar:.2f}</b> 倍。"
         f"{'>0.5 反映「賺到嘅錢值得承受嘅 drawdown」。' if calmar >= 0.5 else '介乎 0.3-0.5，回報相對風險可接受。'}<br>"
-        f"<b>勝率 {win_rate*100:.0f}%</b>：贏多輸少，遠勝拋硬幣機率（50%），符合 trend-following 系統嘅典型表現。"
+        f"<b>勝率 {win_rate*100:.0f}%</b>："
+        f"{'贏錢月份多過輸錢月份。' if win_rate >= 0.5 else '輸錢月份多過贏錢月份。'}<br>"
+        f"<span style='color:#94a3b8;'>以上均為回測數字，未扣交易成本及股息預扣稅；過往統計不代表未來表現。</span>"
     )
     return _commentary_box(verdict, color, body)
 
 
-def comment_oos(oos: dict) -> str:
+def comment_oos(oos: dict, capped: bool = False) -> str:
     deg = oos.get("degradation", {})
     sharpe_deg = deg.get("sharpe", 0)
     cagr_deg = deg.get("cagr", 0)
@@ -93,6 +127,9 @@ def comment_oos(oos: dict) -> str:
     if abs(sharpe_deg) < 0.2: verdict, color = "強", "74, 222, 128"
     elif abs(sharpe_deg) < 0.4: verdict, color = "中強", "34, 211, 238"
     else: verdict, color = "中", "251, 191, 36"
+    if sharpe_deg <= -0.3:
+        verdict, color = "需留意", "251, 191, 36"
+    verdict, color = _cap_verdict(verdict, color, capped)
 
     direction = "退化" if sharpe_deg < 0 else "進步"
     body = (
@@ -102,17 +139,19 @@ def comment_oos(oos: dict) -> str:
         f"<b>點解重要</b>：呢個 test 模擬「我哋設計策略時冇用到 2018+ 數據」嘅情況。"
         f"如果策略喺新數據都 work = 真實 edge；如果 OOS 大幅變差 = overfit 嫌疑（即係策略只係適配舊數據嘅 noise）。<br><br>"
         + (
-            f"✅ <b>OOS Sharpe 仍然 ≥ 0.75 屬優秀</b>，輕微退化反映 momentum strategy 喺唔同 regime 表現有差異，"
-            f"但核心 edge 完整保留。"
-            if os_sh >= 0.75 else
+            f"📊 樣本外 Sharpe（{os_sh:.2f}）高過設計期（{is_sh:.2f}），未見退化。"
+            + (f"不過兩段相差 {abs(sharpe_deg):.2f}，超過 0.3，所以評分卡「OOS 接近設計期」一項未通過——"
+               f"反映策略表現會隨市場環境大幅變化，唔代表未來會維持較高水平。"
+               if abs(sharpe_deg) >= 0.3 else "")
+            if sharpe_deg >= 0 else
             f"⚠️ OOS Sharpe 由 {is_sh:.2f} 退化至 {os_sh:.2f}，反映策略表現會跟住 market regime 改變。"
-            f"不過絕對水平仍正回報，未到 reject 嘅地步。"
+            + ("絕對水平仍然係正數。" if os_sh > 0 else "樣本外 Sharpe 已跌至 0 或以下。")
         )
     )
     return _commentary_box(verdict, color, body)
 
 
-def comment_walk_forward(wf: dict) -> str:
+def comment_walk_forward(wf: dict, capped: bool = False) -> str:
     corr = wf.get("train_oos_sharpe_correlation", 0) or 0
     train_mean = wf.get("train_sharpe_mean", 0)
     oos_mean = wf.get("oos_sharpe_mean", 0)
@@ -120,6 +159,19 @@ def comment_walk_forward(wf: dict) -> str:
     if oos_mean >= 0.5: verdict, color = "強", "74, 222, 128"
     elif oos_mean >= 0.2: verdict, color = "中強", "34, 211, 238"
     else: verdict, color = "中", "251, 191, 36"
+    if corr < -0.2:
+        verdict, color = "需留意", "251, 191, 36"
+    verdict, color = _cap_verdict(verdict, color, capped)
+
+    if abs(corr) <= 0.2:
+        corr_txt = (f"相關係數 {corr:+.3f} 接近 0：歷史訓練期 Sharpe 高低，對下一年表現冇明顯預測力"
+                    f"（momentum 屬跟趨勢策略，呢個情況唔罕見）。"
+                    + ("評分卡「相關性 &gt; 0」一項因此未通過。" if corr <= 0 else ""))
+    elif corr < 0:
+        corr_txt = (f"相關係數 {corr:+.3f}，屬負相關：歷史訓練期 Sharpe 對下一年表現冇預測力（甚至係反方向），"
+                    f"唔可以用「過去幾年表現好」去推斷下一年。")
+    else:
+        corr_txt = f"相關係數 {corr:+.3f}，屬正相關：歷史訓練期 Sharpe 較高嘅年份，下一年表現亦傾向較好。"
 
     body = (
         f"做法：每一年都用「過去 5 年數據」做 training 觀察，再睇真實嗰一年嘅表現。"
@@ -128,17 +180,15 @@ def comment_walk_forward(wf: dict) -> str:
         f"Train↔OOS 相關係數 = <b>{corr:+.3f}</b>。<br><br>"
         f"<b>點解重要</b>：呢個 test 比 OOS 更嚴格 — 模擬「每年都要重新評估策略嘅 alpha」。<br><br>"
         + (
-            f"✅ OOS 平均 Sharpe {oos_mean:.2f} 仍然正面，反映 momentum signal 喺多個 5 年窗口都有效。"
-            f"相關係數接近 0 屬正常 — momentum strategy 係 reactive（跟趨勢）唔係 predictive，"
-            f"歷史 Sharpe 高唔代表下年一定高，但全部年份累積仍然 positive expectancy。"
+            f"📊 OOS 平均 Sharpe {oos_mean:.2f} 為正數。{corr_txt}過往統計不代表未來表現。"
             if oos_mean >= 0.3 else
-            f"OOS Sharpe 平均 {oos_mean:.2f} 偏弱，建議結合其他證據判斷。"
+            f"OOS Sharpe 平均 {oos_mean:.2f} 偏弱，建議結合其他證據判斷。{corr_txt}"
         )
     )
     return _commentary_box(verdict, color, body)
 
 
-def comment_kfold(cv: dict) -> str:
+def comment_kfold(cv: dict, capped: bool = False) -> str:
     mean_sh = cv.get("mean_test_sharpe", 0)
     std_sh = cv.get("std_test_sharpe", 0)
     min_sh = cv.get("min_test_sharpe", 0)
@@ -146,6 +196,7 @@ def comment_kfold(cv: dict) -> str:
     if mean_sh >= 0.75 and min_sh > 0: verdict, color = "強", "74, 222, 128"
     elif mean_sh >= 0.5 and min_sh > 0: verdict, color = "中強", "34, 211, 238"
     else: verdict, color = "中", "251, 191, 36"
+    verdict, color = _cap_verdict(verdict, color, capped)
 
     body = (
         f"做法：將 17 年數據切成 5 段，每段輪流做 test，其餘 4 段做 train。"
@@ -153,8 +204,8 @@ def comment_kfold(cv: dict) -> str:
         f"5 個 fold 嘅 test Sharpe：平均 <b>{mean_sh:.2f}</b>、標準差 <b>{std_sh:.2f}</b>、最低 <b>{min_sh:.2f}</b>、最高 <b>{cv.get('max_test_sharpe', 0):.2f}</b>。<br><br>"
         f"<b>點解重要</b>：De Prado（量化金融教授）建議嘅 gold standard。Embargo 設計避免 train 同 test 之間嘅 monthly autocorrelation 造成數據洩漏。<br><br>"
         + (
-            f"✅ 全部 5 個 fold 都係正 Sharpe，反映策略喺唔同 sub-period 都 robust。"
-            f"波動較大（std={std_sh:.2f}）反映 momentum 表現有 regime dependence，但無一個 fold「炒車」。"
+            f"📊 全部 5 段測試期都係正 Sharpe，但最低一段只有 {min_sh:.2f}。"
+            f"波動較大（std={std_sh:.2f}）反映 momentum 表現好受市場環境影響。"
             if min_sh > 0 else
             f"⚠️ 有 fold 出現負 Sharpe（最低 {min_sh:.2f}），反映某段 market regime 對 momentum 不利。"
         )
@@ -162,7 +213,7 @@ def comment_kfold(cv: dict) -> str:
     return _commentary_box(verdict, color, body)
 
 
-def comment_monte_carlo(mc: dict) -> str:
+def comment_monte_carlo(mc: dict, capped: bool = False) -> str:
     actual = mc.get("actual_cagr", 0)
     p50 = mc.get("cagr_p50", 0)
     p5 = mc.get("cagr_p5", 0)
@@ -171,19 +222,20 @@ def comment_monte_carlo(mc: dict) -> str:
     if prob_neg < 0.05 and actual >= p50 - 0.02: verdict, color = "強", "74, 222, 128"
     elif prob_neg < 0.10: verdict, color = "中強", "34, 211, 238"
     else: verdict, color = "中", "251, 191, 36"
+    verdict, color = _cap_verdict(verdict, color, capped)
 
     pos_vs_median = "略高於" if actual > p50 else "略低於" if actual < p50 - 0.005 else "接近"
     body = (
         f"做法：用 5,000 條人工模擬路徑（block bootstrap，每 6 個月為一個 block 保留 serial correlation），"
         f"觀察「如果歷史月份隨機重排」會有咩結果。<br><br>"
-        f"<b>實際 CAGR {actual*100:.1f}% {pos_vs_median} 中位數 {p50*100:.1f}%</b>，反映實際結果係 typical outcome 而唔係 lucky。<br>"
+        f"<b>實際 CAGR {actual*100:.1f}% {pos_vs_median} 中位數 {p50*100:.1f}%</b>，即實際結果喺模擬分布嘅中間位置。<br>"
         f"5%-ile（最差 5% scenario）CAGR = <b>{p5*100:.1f}%</b>。<br>"
         f"模擬中 CAGR &lt; 0 嘅機率 = <b>{prob_neg*100:.1f}%</b>。<br><br>"
         f"<b>點解重要</b>：bootstrap 重抽歷史 returns 模擬未來。如果你嘅實際 CAGR 接近模擬中位數 = 結果可信；"
         f"如果遠高於 95%-ile = 警示「lucky run」。<br><br>"
         + (
-            f"✅ {prob_neg*100:.1f}% 機率出現負 CAGR 屬於極低 tail risk。"
-            f"即使 5%-ile 嘅最差場景，年化仍然 {p5*100:+.1f}% — 反映策略下行有實質保護。"
+            f"📊 模擬中出現負 CAGR 嘅比例係 {prob_neg*100:.1f}%；5%-ile 場景年化 {p5*100:+.1f}%。"
+            f"注意：bootstrap 只係重新抽歷史月份，模擬唔到歷史上未出現過嘅情境，唔代表未來嘅下行幅度。"
             if p5 > -0.02 else
             f"📊 5%-ile 場景出現 {p5*100:+.1f}% CAGR，提醒最差 5% 情境下會輸返錢，需準備好心理。"
         )
@@ -191,25 +243,27 @@ def comment_monte_carlo(mc: dict) -> str:
     return _commentary_box(verdict, color, body)
 
 
-def comment_hypothesis(ht: dict) -> str:
+def comment_hypothesis(ht: dict, capped: bool = False) -> str:
     p = ht["p_value"]; sig5 = ht["significant_at_5pct"]; sig1 = ht["significant_at_1pct"]
     n = ht["n_observations"]
 
     if sig1: verdict, color = "強", "74, 222, 128"
     elif sig5: verdict, color = "中強", "34, 211, 238"
     else: verdict, color = "弱", "251, 113, 113"
+    verdict, color = _cap_verdict(verdict, color, capped)
 
-    confidence_level = "99.9%" if p < 0.001 else "99%" if sig1 else "95%" if sig5 else "<95%"
     body = (
         f"<b>虛無假設 H₀</b>：策略月度回報嘅平均 = 0（即策略冇任何 alpha，全部回報靠運氣）<br>"
         f"<b>One-sample t-test</b>（{n} 個月度觀察）：t-statistic = <b>{ht['t_statistic']:.2f}</b>，"
         f"p-value = <b>{p:.4f}</b><br><br>"
-        f"<b>點解重要</b>：呢個係統計學黃金標準 — p &lt; 0.05 等於 95% 信心策略嘅回報「唔係靠運氣」。<br><br>"
+        f"<b>點解重要</b>：p &lt; 0.05 表示：假如策略平均回報真係 0，"
+        f"睇到咁高（或更高）平均回報嘅機率少過 5%。<br><br>"
         + (
-            f"✅ p-value {p:.4f} &lt; 0.001，等於 <b>{confidence_level} 信心策略真係有 alpha</b>，"
-            f"絕非運氣。呢個級別嘅統計顯著性喺學術 paper 都算強證據。"
+            f"📊 p-value {p:.4f} &lt; 0.001，喺統計上顯著（拒絕「平均回報 = 0」）。"
+            f"注意：呢個檢定未計參數試錯（見第 7 項 Deflated Sharpe），而且過往統計顯著不代表未來。"
             if p < 0.001 else
-            f"✅ p-value {p:.4f}，達 {confidence_level} 信心水平。"
+            f"📊 p-value {p:.4f}，達 {'1%' if sig1 else '5%'} 顯著水平。"
+            f"呢個檢定未計參數試錯（見第 7 項），過往統計顯著不代表未來。"
             if sig5 else
             f"⚠️ p-value {p:.4f} 未達 5% 顯著性，不能 reject「回報靠運氣」假設。"
         )
@@ -217,31 +271,31 @@ def comment_hypothesis(ht: dict) -> str:
     return _commentary_box(verdict, color, body)
 
 
-def comment_dsr(dsr: dict) -> str:
+def comment_dsr(dsr: dict, capped: bool = False) -> str:
     psr = dsr["deflated_sharpe"]
     sr = dsr["raw_sharpe_annualized"]
     n_trials = dsr["n_trials_assumed"]
     sr0 = dsr["expected_max_sharpe_annualized_under_null"]
 
     if psr >= 0.95: verdict, color = "強", "74, 222, 128"
-    elif psr >= 0.7: verdict, color = "中強", "34, 211, 238"
-    elif psr >= 0.5: verdict, color = "中", "251, 191, 36"
+    elif psr >= 0.5: verdict, color = "需留意", "251, 191, 36"
     else: verdict, color = "弱", "251, 113, 113"
+    verdict, color = _cap_verdict(verdict, color, capped)
 
     body = (
         f"原始 Sharpe = <b>{sr:.2f}</b>。但因為我哋試過 <b>{n_trials} 個 weight combinations</b>，"
         f"理論上即使 random strategy，最高個 trial 都會有 Sharpe ≈ <b>{sr0:.2f}</b>。<br>"
-        f"DSR 計：考慮咗呢個 multiple-testing bias 後，實際 Sharpe 真係優於 random 嘅機率 = <b>{psr*100:.1f}%</b><br><br>"
+        f"DSR = 考慮咗呢個 multiple-testing bias 後，實際 Sharpe 高於「隨機試出嚟最高值」嘅統計概率 = <b>{psr*100:.1f}%</b><br><br>"
         f"<b>點解重要</b>：De Prado 教授警告 — 大量 backtesting 嘅 strategy 容易「testing 出嚟」。"
         f"DSR 係嚴格嘅學術校正，要求 ≥ 95% 先算「真正 robust」。<br><br>"
         + (
-            f"✅ DSR {psr:.3f} ≥ 0.95，<b>策略已通過嚴苛嘅 multiple-testing 校正</b>，極具信心係真 alpha。"
+            f"📊 DSR {psr:.3f} ≥ 0.95，已通過 multiple-testing 校正門檻。過往統計顯著不代表未來。"
             if psr >= 0.95 else
-            f"📊 DSR {psr:.3f} 雖未達 0.95 嚴苛門檻，但已有 <b>{psr*100:.1f}% 信心策略真係 work</b>。"
-            f"呢個結果反映：原始 Sharpe 雖然好，但因為我哋誠實咁試過 286+ 個 weight combinations，"
-            f"統計上有少少「幸運」嘅可能。<br><br>"
-            f"<b>實際意義</b>：唔等於策略無效。Hypothesis test (p&lt;0.001) 已經證明回報統計顯著。"
-            f"DSR 只係更保守嘅 second check。<b>市場上多數公開發表嘅 momentum strategy 都過唔到 DSR 0.95</b>。"
+            f"⚠️ DSR {psr:.3f} <b>未達 0.95 門檻</b>（評分卡呢項未通過）。"
+            f"意思係：因為我哋試過 {n_trials} 個 weight combinations，原始 Sharpe 有一部分可能係「試出嚟」，"
+            f"統計上唔可以排除運氣成分。<br><br>"
+            f"<b>實際意義</b>：唔等於策略無效，亦唔等於策略有效。第 6 項 hypothesis test 冇做呢個校正，"
+            f"所以兩項要一齊睇；過往統計不代表未來。"
             if psr >= 0.5 else
             f"⚠️ DSR {psr:.3f} 偏低，提醒原始 Sharpe 可能受 multiple-testing 放大。"
             f"但 hypothesis test 仍然 significant，建議綜合判斷。"
@@ -250,7 +304,7 @@ def comment_dsr(dsr: dict) -> str:
     return _commentary_box(verdict, color, body)
 
 
-def comment_stress(stress: dict) -> str:
+def comment_stress(stress: dict, capped: bool = False) -> str:
     losses = [s["total_return"] for s in stress.values()]
     worst = min(losses) if losses else 0
     worst_name = min(stress.items(), key=lambda x: x[1]["total_return"])[0] if losses else "—"
@@ -261,20 +315,27 @@ def comment_stress(stress: dict) -> str:
     if worst > -0.20 and avg_dd > -0.15: verdict, color = "強", "74, 222, 128"
     elif worst > -0.30: verdict, color = "中強", "34, 211, 238"
     else: verdict, color = "中", "251, 191, 36"
+    if n_total > 0 and n_positive == 0:
+        verdict, color = "需留意", "251, 191, 36"
+    verdict, color = _cap_verdict(verdict, color, capped)
+
+    # SPY reference only for the fixed 2008-01 → 2009-06 GFC window
+    has_gfc = any(str(s.get("period", "")).startswith("2008-01-01") for s in stress.values())
+    spy_ref = ("作為參考：2008-01 至 2009-06 同期 SPY 買入持有約 −35%（期內峰谷回撤約 −52%）。"
+               if has_gfc else "")
 
     body = (
-        f"6 個歷史危機期間嘅實戰表現。最差場景：<b>{worst_name}</b> 蝕 <b>{worst*100:.1f}%</b>。<br>"
+        f"{n_total} 個歷史危機期間嘅回測表現。最差場景：<b>{worst_name}</b> 蝕 <b>{worst*100:.1f}%</b>。<br>"
         f"危機期間正回報嘅次數：<b>{n_positive}/{n_total}</b>。<br>"
         f"危機期間平均 intra-period MDD：<b>{avg_dd*100:.1f}%</b>。<br><br>"
-        f"<b>點解重要</b>：相對 Buy & Hold SPY 喺 2008 GFC 蝕 -47%，呢個 stress test 顯示 momentum rotation"
-        f"喺重大危機嘅實際保護程度。<br><br>"
+        f"<b>點解重要</b>：睇吓 momentum 換倉喺重大危機入面實際蝕幾多。{spy_ref}<br><br>"
         + (
-            f"✅ 最差危機都只係蝕 {worst*100:.1f}%（vs SPY 喺同期蝕 -47%），"
-            f"反映 momentum signal 真係能夠 timely rotate 去 BIL/防守資產。"
+            f"📊 危機期間 {n_positive}/{n_total} 次正回報，即係策略喺危機中主要係「少蝕」，唔係「賺錢」；"
+            f"每月先換倉一次，急跌急升時會慢半拍。"
             if worst > -0.20 else
             f"📊 最差危機蝕 {worst*100:.1f}%，反映 momentum 喺急轉嘅 regime 會有延誤。"
-            f"但相對 SPY 同期表現，已經有顯著保護。"
         )
+        + "過往表現不代表未來。"
     )
     return _commentary_box(verdict, color, body)
 
@@ -296,6 +357,13 @@ def render_academic_validation(json_path: str):
 
     n_passed = sum(scorecard.values())
     n_total = len(scorecard)
+    flags = _red_flags(v)
+    capped = bool(flags)
+    flags_html = (
+        f'<div style="font-size:11px;color:#fbbf24;margin-top:8px;line-height:1.6;">'
+        f'⚠️ 以下測試結果需要留意：{"；".join(flags)}。因此下面各項評語最高只標「信心中」。</div>'
+        if flags else ""
+    )
 
     # ── HEADER ──
     st.markdown(
@@ -307,7 +375,7 @@ def render_academic_validation(json_path: str):
     🎓 學術級驗證 · ACADEMIC-GRADE VALIDATION
   </div>
   <div style="font-size:13px;color:#cbd5e1;line-height:1.7;margin-bottom:8px;">
-    本策略通過 <b style="color:#22d3ee;">8 項學術級統計測試</b>，以下每項測試後都有「📝 評語」
+    本策略接受 <b style="color:#22d3ee;">{n_total} 項學術級統計測試</b>（通過 {n_passed} 項），以下每項測試後都有「📝 評語」
     解釋結果嘅實際意義。所有 results 都 pre-computed，可喺 GitHub 嘅
     <code>validation_*.json</code> 直接驗證。
   </div>
@@ -317,6 +385,7 @@ def render_academic_validation(json_path: str):
   <div style="font-size:11px;color:#64748b;margin-top:4px;">
     結果生成日期：{v.get('generated_at', 'N/A')[:10]}
   </div>
+  {flags_html}
 </div>
         """,
         unsafe_allow_html=True,
@@ -349,7 +418,7 @@ def render_academic_validation(json_path: str):
     with c8:
         st.markdown(_kpi_card(f"{m['annualized_vol']*100:.1f}%", "年化波動率", "#94a3b8"), unsafe_allow_html=True)
 
-    st.markdown(comment_metrics(m), unsafe_allow_html=True)
+    st.markdown(comment_metrics(m, capped), unsafe_allow_html=True)
 
     # ── SECTION 2: OUT-OF-SAMPLE ──
     st.markdown(_section_title(2, "樣本外測試", "Out-of-Sample Testing"),
@@ -394,7 +463,7 @@ def render_academic_validation(json_path: str):
         """,
         unsafe_allow_html=True,
     )
-    st.markdown(comment_oos(oos), unsafe_allow_html=True)
+    st.markdown(comment_oos(oos, capped), unsafe_allow_html=True)
 
     # ── SECTION 3: WALK-FORWARD ──
     if "yearly" in wf and wf.get("yearly"):
@@ -426,7 +495,7 @@ def render_academic_validation(json_path: str):
             hovermode="x unified",
         )
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-        st.markdown(comment_walk_forward(wf), unsafe_allow_html=True)
+        st.markdown(comment_walk_forward(wf, capped), unsafe_allow_html=True)
 
     # ── SECTION 4: PURGED K-FOLD CV ──
     if "folds" in cv:
@@ -460,7 +529,7 @@ def render_academic_validation(json_path: str):
             </tr></thead><tbody>{rows}</tbody></table>""",
             unsafe_allow_html=True,
         )
-        st.markdown(comment_kfold(cv), unsafe_allow_html=True)
+        st.markdown(comment_kfold(cv, capped), unsafe_allow_html=True)
 
     # ── SECTION 5: MONTE CARLO ──
     st.markdown(_section_title(5, "蒙地卡羅自助法", "Monte Carlo Block Bootstrap"),
@@ -508,7 +577,7 @@ def render_academic_validation(json_path: str):
         </div>""",
         unsafe_allow_html=True,
     )
-    st.markdown(comment_monte_carlo(mc), unsafe_allow_html=True)
+    st.markdown(comment_monte_carlo(mc, capped), unsafe_allow_html=True)
 
     # ── SECTION 6: HYPOTHESIS TEST ──
     st.markdown(_section_title(6, "假設檢定（t-test）", "Hypothesis Test"),
@@ -526,7 +595,7 @@ def render_academic_validation(json_path: str):
         </div></div>""",
         unsafe_allow_html=True,
     )
-    st.markdown(comment_hypothesis(ht), unsafe_allow_html=True)
+    st.markdown(comment_hypothesis(ht, capped), unsafe_allow_html=True)
 
     # ── SECTION 7: DEFLATED SHARPE ──
     psr = dsr['deflated_sharpe']
@@ -547,7 +616,7 @@ def render_academic_validation(json_path: str):
         </div></div>""",
         unsafe_allow_html=True,
     )
-    st.markdown(comment_dsr(dsr), unsafe_allow_html=True)
+    st.markdown(comment_dsr(dsr, capped), unsafe_allow_html=True)
 
     # ── SECTION 8: STRESS PERIODS ──
     if stress:
@@ -580,7 +649,7 @@ def render_academic_validation(json_path: str):
             </tr></thead><tbody>{rows}</tbody></table>""",
             unsafe_allow_html=True,
         )
-        st.markdown(comment_stress(stress), unsafe_allow_html=True)
+        st.markdown(comment_stress(stress, capped), unsafe_allow_html=True)
 
     # ── FINAL SCORECARD ──
     st.markdown(
@@ -592,14 +661,14 @@ def render_academic_validation(json_path: str):
     )
 
     score_labels = {
-        "sharpe_above_0_75": ("Sharpe ≥ 0.75", "風險調整後回報優秀"),
+        "sharpe_above_0_75": ("Sharpe ≥ 0.75", "風險調整後回報達參考門檻（RF=0%）"),
         "calmar_above_0_4": ("Calmar ≥ 0.4", "回報相對最大回撤合理"),
         "profit_factor_above_1_5": ("Profit Factor ≥ 1.5", "賺錢月份係蝕錢嘅 1.5 倍以上"),
         "win_rate_above_55pct": ("月勝率 ≥ 55%", "贏多輸少"),
         "p_value_below_0_05": ("Hypothesis test p<0.05", "回報統計顯著（唔係靠運氣）"),
         "dsr_above_0_95": ("Deflated Sharpe ≥ 0.95", "嚴格 multiple-test 校正後仍 robust"),
         "oos_sharpe_close_to_in_sample": ("OOS Sharpe 退化 < 0.3", "新數據表現接近設計階段"),
-        "wf_correlation_positive": ("Walk-forward 相關性 > 0", "歷史 train Sharpe 對 OOS 有正面預測"),
+        "wf_correlation_positive": ("Walk-forward 相關性 > 0", "歷史 train Sharpe 對下一年表現有預測力"),
     }
     rows = []
     for key, (label, desc) in score_labels.items():
@@ -611,15 +680,19 @@ def render_academic_validation(json_path: str):
             f'<td style="padding:8px 10px;text-align:right;font-size:18px;">{_check_or_x(passed)}</td></tr>'
         )
 
-    # Summary verdict
-    if n_passed >= 7:
-        v_text, v_color = "極強 — 喺嚴苛學術標準下仍然證實有效", "74, 222, 128"
-    elif n_passed >= 5:
-        v_text, v_color = "強 — 主要學術測試通過，少數嚴苛項未達門檻屬合理", "34, 211, 238"
+    # Summary verdict — follows the objective scorecard, never hard-coded
+    failed = [score_labels[k][0].replace("<", "&lt;").replace(">", "&gt;")
+              for k in score_labels if not scorecard.get(k, False)]
+    failed_txt = f"（未通過：{'、'.join(failed)}）" if failed else ""
+    if n_passed == n_total:
+        v_text, v_color = "強：全部測試通過", "74, 222, 128"
+    elif n_passed >= 6:
+        v_text, v_color = f"中強：大部分測試通過{failed_txt}", "34, 211, 238"
     elif n_passed >= 3:
-        v_text, v_color = "中等 — 有實質 alpha 證據但仍有改善空間", "251, 191, 36"
+        v_text, v_color = f"中等：部分嚴苛測試未通過{failed_txt}", "251, 191, 36"
     else:
-        v_text, v_color = "弱 — 多數測試未通過，需檢討", "251, 113, 113"
+        v_text, v_color = f"弱：多數測試未通過，需檢討{failed_txt}", "251, 113, 113"
+    v_text += "<br><span style='color:#94a3b8;font-size:12px;'>以上全部係回測統計；過往統計顯著不代表未來表現。</span>"
 
     st.markdown(
         f"""<table style="width:100%;border-collapse:collapse;background:#0d1424;
