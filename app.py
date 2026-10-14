@@ -483,21 +483,25 @@ def compute_signals(df: pd.DataFrame) -> pd.DataFrame:
     prices = df.copy()
 
     # ── Date-based lookback returns ──────────────────────────────────────────
-    # IMPORTANT: We use pd.DateOffset (calendar months), NOT shift(m) (row count).
-    # shift(m) breaks when dropna() removes rows for missing ETF data, causing
-    # the 12-row lookback to land on the wrong calendar month (e.g. Dec 2018
-    # instead of Feb 2019), which silently corrupts all momentum scores.
+    # IMPORTANT: lookback is anchored on CALENDAR MONTHS, not day arithmetic.
+    # `pd.DateOffset(months=m)` subtracts m calendar months from each month-END
+    # date, which lands mid-month (e.g. 2026-11-30 − 3M = 2026-08-30); ffill then
+    # rolls back to the EARLIER month-end (2026-07-31), silently making the
+    # lookback m+1 months long. Month-ends in Feb/Apr/Jun/Nov are affected
+    # (77 of 232 month-ends). shift(m) is also wrong: dropna() removes rows for
+    # missing ETF data, so a row-count shift lands on the wrong calendar month.
     #
-    # Method: for each month-end date, compute the target date (exactly m months
-    # earlier), build a forward-filled lookup series to handle any gaps, then
-    # divide current price by the looked-up prior price.
+    # Method: align on monthly Periods. For each month-end, target = the same
+    # month m months earlier; ffill the price series across any missing
+    # month-ends and divide current price by the looked-up prior price. This
+    # guarantees the lookback is EXACTLY m months for every month-end.
+    mth = prices.index.to_period("M")
+    pos = pd.Series(prices.index, index=mth)
     for m in [3, 6, 9, 12]:
-        target_dates = prices.index - pd.DateOffset(months=m)
+        tp = mth - m
+        aligned = pos.reindex(mth.union(tp)).sort_index().ffill().reindex(tp)
         for t in TICKERS:
-            # Union the index with target dates, ffill to cover any missing months
-            full_idx = prices.index.union(target_dates).sort_values()
-            filled   = prices[t].reindex(full_idx).ffill()
-            prior    = filled.reindex(target_dates).values
+            prior = prices[t].reindex(aligned.values).values
             prices[f"{t}_{m}m"] = prices[t].values / prior - 1
 
     # Weighted score from WEIGHTS dict (currently 3M*0.8 + 12M*0.2; 6M/9M unused).
