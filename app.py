@@ -885,13 +885,15 @@ def render_signal_card(info: dict):
 
     # YTD badge
     ytd_ret = info.get("ytd_ret")
+    # January: the "YTD" figure is actually LAST year's full-year return
+    ytd_label = f"{data_dt.year}全年" if data_dt.year != now.year else "YTD"
     if ytd_ret is not None:
         ytd_pct = f"{ytd_ret*100:+.1f}%"
         y_clr = "#4ade80" if ytd_ret >= 0 else "#f87171"
         y_bg = "#052e16" if ytd_ret >= 0 else "#450a0a"
         ytd_html = (
             f'<span class="badge" style="background:{y_bg};color:{y_clr};">'
-            f'📅 YTD {ytd_pct}</span>'
+            f'📅 {ytd_label} {ytd_pct}</span>'
         )
     else:
         ytd_html = ""
