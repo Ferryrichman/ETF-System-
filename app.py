@@ -1875,7 +1875,7 @@ def render_supplementary_disclosure(json_path: str = "validation_basic.json"):
         補充披露 · Backtest Limitations
     </div>
     <ul style="font-size:12px;color:#94a3b8;line-height:1.7;margin:0 0 8px 18px;padding:0;">
-        <li {li}><b style="color:#cbd5e1;">Sharpe 計法</b>：頁面 Sharpe 以無風險利率 0% 計；如改用 BIL（短期國庫券）做基準，Sharpe 約 0.75。</li>
+        <li {li}><b style="color:#cbd5e1;">Sharpe 計法</b>：頁面 Sharpe 以無風險利率 0% 計；如改用 BIL（短期國庫券）做基準，Sharpe 約 0.83。</li>
         <li {li}><b style="color:#cbd5e1;">未扣成本及稅</b>：回測未扣交易成本，亦未扣港人持有美股 ETF 嘅 30% 股息預扣稅；估計扣除後每年回報再低約 1 個百分點。</li>
         <li {li}><b style="color:#cbd5e1;">訊號日敏感度</b>：同一套規則如果改喺每月第 1–5 個交易日執行，回測 CAGR 約 8.4%–11.6%、最大回撤約 −16% 至 −26%；喺呢個測試入面，頁面採用嘅第 1 個交易日剛好係 5 個執行日之中結果最好嘅一個，所以實際執行結果可以明顯差過頁面數字。</li>
         <li {li}><b style="color:#cbd5e1;">參數試錯校正</b>：Deflated Sharpe = {dsr_txt}，未達 0.95 門檻，即係經參數試錯校正後，統計上唔可以排除運氣成分。</li>
