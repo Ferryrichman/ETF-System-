@@ -199,7 +199,7 @@ def comment_kfold(cv: dict, capped: bool = False) -> str:
     verdict, color = _cap_verdict(verdict, color, capped)
 
     body = (
-        f"做法：將 17 年數據切成 5 段，每段輪流做 test，其餘 4 段做 train。"
+        f"做法：將約 19 年數據（225 個月）切成 5 段，每段輪流做 test，其餘 4 段做 train。"
         f"用 1 個月 embargo（隔離 train 同 test，防止資訊洩漏）。<br><br>"
         f"5 個 fold 嘅 test Sharpe：平均 <b>{mean_sh:.2f}</b>、標準差 <b>{std_sh:.2f}</b>、最低 <b>{min_sh:.2f}</b>、最高 <b>{cv.get('max_test_sharpe', 0):.2f}</b>。<br><br>"
         f"<b>點解重要</b>：De Prado（量化金融教授）建議嘅 gold standard。Embargo 設計避免 train 同 test 之間嘅 monthly autocorrelation 造成數據洩漏。<br><br>"
