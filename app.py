@@ -1897,6 +1897,33 @@ def render_supplementary_disclosure(json_path: str = "validation_basic.json"):
     )
 
 
+def render_warnings_section(trades_yr=None):
+    """Critical risk warnings — must be acknowledged.
+    trades_yr: same computed value as the KPI tile (calc_stats)."""
+    trades_txt = f"約 {trades_yr:.0f}" if trades_yr is not None else "（見上方 KPI）"
+    st.markdown(
+        f"""
+<div style="background:linear-gradient(135deg, #2a1010, #1a0a0a); border:1.5px solid #7f1d1d;
+    border-radius:14px; padding:20px 24px; margin-top:18px;">
+  <div style="font-size:11px;color:#f87171;font-weight:800;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:12px;">
+    ⚠️ 必須了解嘅風險
+  </div>
+  <ul style="font-size:13px;color:#cbd5e1;line-height:1.8;padding-left:20px;margin:0;">
+    <li><b style="color:#f87171;">最差單月 −9.5%</b>：實測最差單月係 2008-06（−9.5%），2010-05 亦試過 −9.2%</li>
+    <li><b style="color:#f87171;">最大回撤歷史 −15.9%（2008–2026）</b>：未來可以更深，唔可以假設最壞已經過去</li>
+    <li><b style="color:#f87171;">心理承受要強</b>：當你一個月跌近 10%，唔可以 panic sell — 月底 momentum 會自動 rotate</li>
+    <li><b style="color:#fbbf24;">無槓桿設計</b>：Standard 只持 SPY／VEU／BIL，冇 2x ETF，所以冇杠杆衰變，但牛市回報亦會明顯低過 Premium</li>
+    <li><b style="color:#fbbf24;">月度 turnover {trades_txt} trades/yr</b>：每月最多換倉一次（約數）；HK 投資者佣金係成本</li>
+    <li><b style="color:#fbbf24;">執行紀律</b>：必須月底準時 review、月初準時執行；錯過一次訊號可能影響全年回報</li>
+    <li><b style="color:#94a3b8;">Backtest 限制</b>：約 19 年數據（2008–2026）未包 2000-2007 dotcom bust，未經完整 secular bear market 驗證</li>
+    <li><b style="color:#94a3b8;">Slippage 假設為零</b>：實際執行 SPY／VEU spread 約 0.02–0.10%</li>
+  </ul>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_footer():
     year = datetime.now(_HK_TZ).year
     st.markdown(
@@ -2400,6 +2427,7 @@ def main():
     render_academic_validation("validation_basic.json")
 
     render_supplementary_disclosure("validation_basic.json")
+    render_warnings_section(stats.get("trades_yr"))
     render_disclaimer()
     render_footer()
 
