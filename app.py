@@ -1880,7 +1880,7 @@ def render_supplementary_disclosure(json_path: str = "validation_basic.json"):
         <li {li}><b style="color:#cbd5e1;">訊號日敏感度</b>：同一套規則如果改喺每月第 1–5 個交易日執行，回測 CAGR 約 8.4%–11.6%、最大回撤約 −16% 至 −26%；喺呢個測試入面，頁面採用嘅第 1 個交易日剛好係 5 個執行日之中結果最好嘅一個，所以實際執行結果可以明顯差過頁面數字。</li>
         <li {li}><b style="color:#cbd5e1;">參數試錯校正</b>：Deflated Sharpe = {dsr_txt}，未達 0.95 門檻，即係經參數試錯校正後，統計上唔可以排除運氣成分。</li>
         <li {li}><b style="color:#cbd5e1;">Momentum crash 風險</b>：動力策略喺市況急速反轉時（例如急跌後急彈）可以出現較大虧損，每月先換倉一次會慢半拍。</li>
-        <li {li}><b style="color:#cbd5e1;">同 SPY 比較</b>：以滾動 3 年計，本策略約 8 成時間跑輸長期持有 SPY。呢個係策略設計嘅取捨——市況差時轉去避險資產（BIL）以減少回撤，代價係牛市時通常追唔上大市。</li>
+        <li {li}><b style="color:#cbd5e1;">同 SPY 比較</b>：以滾動 3 年計，本策略約 7 成時間跑輸長期持有 SPY。呢個係策略設計嘅取捨——市況差時轉去避險資產（BIL）以減少回撤，代價係牛市時通常追唔上大市。</li>
         <li {li}><b style="color:#cbd5e1;">回測期限制</b>：回測期 2008–2026 未涵蓋一個完整嘅長期熊市（secular bear market）。</li>
     </ul>
     <p style="font-size:11px;color:#64748b;line-height:1.7;margin:0;">
