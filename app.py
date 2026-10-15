@@ -1855,12 +1855,17 @@ def render_disclaimer():
 
 
 def render_supplementary_disclosure(json_path: str = "validation_basic.json"):
-    """補充披露 — backtest limitations (figures from the 2026-10-13 independent audit)."""
+    """補充披露 — backtest limitations (figures from the latest independent audit; date is read from the JSON generated_at)."""
     try:
         dsr_v = float(_load_validation_json(json_path)["deflated_sharpe"]["deflated_sharpe"])
         dsr_txt = f"{dsr_v:.3f}"
     except Exception:
         dsr_txt = "—"
+    try:
+        _gen = _load_validation_json(json_path).get("generated_at", "")
+        gen_ym = _gen[:7] if isinstance(_gen, str) and len(_gen) >= 7 and _gen[4] == "-" else "2026-10-13"
+    except Exception:
+        gen_ym = "2026-10-13"
     li = 'style="margin-bottom:6px;"'
     st.markdown(
         f"""
@@ -1884,7 +1889,7 @@ def render_supplementary_disclosure(json_path: str = "validation_basic.json"):
         <li {li}><b style="color:#cbd5e1;">回測期限制</b>：回測期 2008–2026 未涵蓋一個完整嘅長期熊市（secular bear market）。</li>
     </ul>
     <p style="font-size:11px;color:#64748b;line-height:1.7;margin:0;">
-        以上數字為約數，出自 2026-10-13 獨立回測審計。本系統只供教學及記錄用途，不構成任何投資建議；回測及過往表現不代表將來。
+        以上數字為約數，出自 {gen_ym} 獨立回測審計。本系統只供教學及記錄用途，不構成任何投資建議；回測及過往表現不代表將來。
     </p>
 </div>
         """,
