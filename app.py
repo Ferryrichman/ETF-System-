@@ -1119,7 +1119,7 @@ def render_whatsapp_section(info: dict, stats: dict):
         f"{yr5_line}\n"
         f"{yr10_line}\n"
         f"\n"
-        f"💎 加價機制：策略 YTD 每升 10%，下一季訂閱費上調\n"
+        f"💎 加價機制：策略 YTD 每升 10%，下一季訂閱費上調；新訂閱價格以當時頁面所示為準\n"
         f"🔒 現有會員鎖定現價，永不受加價影響 — 愈早加入愈抵\n"
         f"📣 快啲介紹俾想 HEA 富嘅朋友喇！\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -1345,7 +1345,7 @@ def render_price_ladder(info: dict):
         '<div style="min-width:220px;">'
         '<div style="font-size:11px;color:#818cf8;font-weight:800;letter-spacing:1.5px;text-transform:uppercase;">'
         '💎 訂閱費與業績掛鈎</div>'
-        '<div style="font-size:13px;color:#94a3b8;margin-top:6px;">策略 YTD 每升 10%，下一季訂閱費上調</div>'
+        '<div style="font-size:13px;color:#94a3b8;margin-top:6px;">策略 YTD 每升 10%，下一季訂閱費上調；新訂閱價格以當時頁面所示為準</div>'
         '</div>'
         '<div style="display:flex;gap:26px;text-align:center;">'
         f'<div><div style="font-size:26px;font-weight:900;color:{ytd_clr};">{ytd_pct:+.1f}%</div>'
