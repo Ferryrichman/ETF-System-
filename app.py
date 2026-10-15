@@ -440,8 +440,15 @@ def load_prices(date_key: str = "") -> pd.DataFrame:
         # First trading day OPEN of each month → buy/sell execution price
         open_frames[t]  = daily["Open"].resample("ME").first()
 
-    # Main DataFrame indexed by month-end dates
-    df = pd.DataFrame(close_frames).dropna()
+    # Main DataFrame indexed by month-end dates.
+    # AUDIT 2026-10-15b (M5): NO `.dropna()` here — the 3M/12M lookback must
+    # resolve against the same panel convention as qrs-premium / the validation
+    # JSON (build_monthly_universe). Dropping rows where any ticker was missing
+    # forced the panel to start at BIL's inception (2007-05), which silently
+    # deleted the first 5 months of 2008 and made this page show CAGR 11.7% /
+    # $75,971 while the academic section, validation_basic.json and the landing
+    # page all said 11.19% / 225 months.
+    df = pd.DataFrame(close_frames)
     if df.empty:
         st.error("數據合併失敗，請重新整理頁面。")
         st.stop()
@@ -673,6 +680,10 @@ def _get_mtd_window(sig: str, date_key: str = "", month_key: str = ""):
 
 def calc_stats(prices: pd.DataFrame) -> dict:
     monthly_all = prices["signal_return"].dropna()
+    # AUDIT 2026-10-15b (M1): clip the chart series to the KPI period
+    # (PERF_YEAR_START) so the growth curve / underwater chart can never span
+    # more months (or end at a different $ value) than the KPI tile.
+    monthly_all = monthly_all[monthly_all.index.year >= PERF_YEAR_START]
 
     # Full-history strategy cumulative series — used for the growth curve
     cum_all = (1 + monthly_all).cumprod() * 10000
@@ -1688,6 +1699,10 @@ def render_allocation_heatmap(prices: pd.DataFrame):
     ret_map: dict = {}
     for dt in prices.index:
         y, m = dt.year, dt.month
+        if y < PERF_YEAR_START:
+            # AUDIT 2026-10-15b (M2): keep the heatmap inside the stated backtest
+            # window (the panel can now start before 2008).
+            continue
         e = held.loc[dt]
         r = ret_s.loc[dt]
         if pd.notna(e):
@@ -2177,7 +2192,7 @@ def render_login_page():
        📈 訂閱 Standard &nbsp;→
     </a>
     <div style="font-size: 10px; color: #334155; margin-top: 14px;">
-        SPY/VEU/BIL · 17yr CAGR 9.7% · 月度 WhatsApp 訊號
+        SPY/VEU/BIL · 歷史回測 18.8 年（2008–2026）：平均每年 +11.2% · 每月 WhatsApp 訊號
     </div>
 </div>
             """,
